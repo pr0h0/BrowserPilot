@@ -57,6 +57,8 @@ export function App() {
         <span className="row" style={{ gap: 5 }}>
           <span className="dot" style={{ background: COLORS[state] }} />
           <span className="muted">{state}{tab?.enabled ? " · control on" : ""}</span>
+          {/* Chrome has no sidePanel.close() API — window.close() inside the panel is the way. */}
+          <button className="ghost" title="Close side panel" onClick={() => window.close()}>✕</button>
         </span>
       </header>
 
