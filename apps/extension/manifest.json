@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "BrowserPilot",
+  "version": "0.1.0",
+  "description": "Owner-controlled browser automation/debugging bridge. Connects outbound to your own BrowserPilot backend.",
+  "permissions": ["tabs", "activeTab", "scripting", "storage", "sidePanel"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "src/service-worker/index.ts", "type": "module" },
+  "action": { "default_popup": "src/popup/index.html", "default_title": "BrowserPilot" },
+  "side_panel": { "default_path": "src/sidepanel/index.html" },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["src/content/index.ts"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ]
+}

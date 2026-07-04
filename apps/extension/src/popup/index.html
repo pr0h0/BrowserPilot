@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BrowserPilot</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body { width: 320px; margin: 0; font: 13px/1.45 system-ui, sans-serif; padding: 12px; }
+      h1 { font-size: 15px; margin: 0 0 8px; }
+      .row { display: flex; gap: 6px; align-items: center; margin: 6px 0; }
+      input { flex: 1; padding: 5px 6px; border: 1px solid #8884; border-radius: 5px; background: transparent; color: inherit; }
+      button { padding: 5px 9px; border: 1px solid #8886; border-radius: 6px; background: #2b8cff; color: #fff; cursor: pointer; }
+      button.ghost { background: transparent; color: inherit; }
+      button:disabled { opacity: .5; cursor: default; }
+      .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+      .muted { opacity: .65; font-size: 12px; }
+      label { font-size: 11px; opacity: .7; display: block; margin-top: 6px; }
+      code { font-size: 11px; word-break: break-all; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>

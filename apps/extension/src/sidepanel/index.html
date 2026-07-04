@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BrowserPilot</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body { margin: 0; font: 13px/1.45 system-ui, sans-serif; }
+      #root { padding: 12px; }
+      h1 { font-size: 15px; margin: 0 0 10px; }
+      section { border: 1px solid #8883; border-radius: 8px; padding: 10px; margin-bottom: 10px; }
+      section > h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; opacity: .7; margin: 0 0 8px; }
+      .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 5px 0; }
+      input, textarea, select { padding: 5px 6px; border: 1px solid #8884; border-radius: 5px; background: transparent; color: inherit; font: inherit; }
+      textarea { width: 100%; box-sizing: border-box; resize: vertical; }
+      input { flex: 1; min-width: 80px; }
+      button { padding: 4px 9px; border: 1px solid #8886; border-radius: 6px; background: #2b8cff; color: #fff; cursor: pointer; font-size: 12px; }
+      button.ghost { background: transparent; color: inherit; }
+      button:disabled { opacity: .5; cursor: default; }
+      .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+      .muted { opacity: .65; font-size: 12px; }
+      code, pre { font-size: 11px; word-break: break-all; white-space: pre-wrap; }
+      pre { background: #8881; padding: 8px; border-radius: 6px; max-height: 220px; overflow: auto; }
+      .err { color: #e74c3c; }
+      .pill { font-size: 10px; padding: 1px 6px; border-radius: 10px; background: #8882; }
+      .tabs { display: flex; gap: 2px; border-bottom: 1px solid #8883; margin-bottom: 10px; overflow-x: auto; }
+      .tab { background: transparent; color: inherit; border: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 6px 10px; opacity: .65; white-space: nowrap; }
+      .tab:hover { opacity: .9; }
+      .tab.active { opacity: 1; border-bottom-color: #2b8cff; font-weight: 600; }
+      .badge { display: inline-block; min-width: 14px; text-align: center; margin-left: 5px; font-size: 10px; padding: 0 4px; border-radius: 9px; background: #2b8cff; color: #fff; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>
