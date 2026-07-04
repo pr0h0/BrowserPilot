@@ -8,9 +8,10 @@ const COLORS: Record<string, string> = { connected: "#2ecc71", connecting: "#f1c
 export function ConnectionPanel({ status, tab, onTabToggle }: { status: ConnectionStatus | null; tab: ActiveTab | null; onTabToggle: () => void }) {
   const { settings, reload } = useSettings();
   const [url, setUrl] = useState(""); const [token, setToken] = useState(""); const [name, setName] = useState("");
-  useEffect(() => { if (settings) { setUrl(settings.backendUrl); setToken(settings.pairingToken); setName(settings.browserName); } }, [settings]);
+  const [dbg, setDbg] = useState(false);
+  useEffect(() => { if (settings) { setUrl(settings.backendUrl); setToken(settings.pairingToken); setName(settings.browserName); setDbg(settings.enableDebugger); } }, [settings]);
 
-  const save = async () => { await sendToSw({ kind: "saveSettings", settings: { backendUrl: url, pairingToken: token, browserName: name } }); reload(); };
+  const save = async () => { await sendToSw({ kind: "saveSettings", settings: { backendUrl: url, pairingToken: token, browserName: name, enableDebugger: dbg } }); reload(); };
   const state = status?.state ?? "disconnected";
   const warn = url && !isLocalUrl(url) && !isSecure(url);
 
@@ -38,6 +39,18 @@ export function ConnectionPanel({ status, tab, onTabToggle }: { status: Connecti
         </button>
         {tab?.enabled && <span className="pill">control on</span>}
       </div>
+      <div className="row">
+        <label style={{ fontSize: 12, display: "flex", gap: 5, alignItems: "center" }}>
+          <input type="checkbox" style={{ flex: "none" }} checked={dbg} onChange={(e) => setDbg(e.target.checked)} />
+          Enable debugger features (network capture, deep console)
+        </label>
+      </div>
+      {dbg && (
+        <div className="muted" style={{ fontSize: 11 }}>
+          Also add <code>"debugger"</code> to <code>permissions</code> in manifest.json, rebuild, and reload the
+          extension — Chrome doesn't allow it as an optional permission. Save to apply.
+        </div>
+      )}
     </section>
   );
 }

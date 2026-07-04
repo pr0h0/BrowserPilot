@@ -29,6 +29,11 @@ AI ───┘                        (commands + responses + events)
 - **Pairing token**: set `PAIRING_TOKEN` on the backend and the same token in the
   extension. The `hello` handshake includes it; a wrong/missing token is rejected.
   With no token set, connections are allowed **only** when `NODE_ENV=development`.
+- **The REST API requires the same token** (`Authorization: Bearer <PAIRING_TOKEN>`,
+  or `X-Pairing-Token`). Only `GET /health` is open. Without a token configured,
+  REST works only in `NODE_ENV=development`.
+- The backend binds **127.0.0.1** by default. Set `HOST=0.0.0.0` only if you
+  deliberately want it reachable from other machines (then use a strong token).
 - Commands map to a **fixed allow-list of handlers** (`COMMAND_TYPES`). There is no
   raw-JS execution path.
 - **Per-tab control**: page extraction/actions are refused unless you enabled control
@@ -101,10 +106,14 @@ Open the side panel from the popup's **Open side panel** button.
 2. Extension: enter the same value in the **Pairing token** field, Save, Connect.
 3. Wrong/missing token → connection rejected. In `NODE_ENV=development` an empty token
    is accepted for convenience.
+4. The same token guards the REST API: `curl -H 'authorization: Bearer your-secret' …`.
+   The CLI reads it from `BROWSERPILOT_TOKEN` (or `PAIRING_TOKEN`); the extension's
+   Chat tab sends the token you saved in settings.
 
 ## 9. CLI examples
 
 The CLI talks to the backend (`BROWSERPILOT_URL`, default `http://localhost:9876`).
+If a `PAIRING_TOKEN` is set, export `BROWSERPILOT_TOKEN=<token>` (or `PAIRING_TOKEN`).
 If exactly one browser is connected, `--browser` can be omitted.
 
 ```bash
@@ -127,6 +136,10 @@ bun run cli ask "Why is this page broken?" --attach-page --attach-console --atta
 ```
 
 (`bun run cli` is shorthand for `bun --filter @browserpilot/cli start --`.)
+
+Notes: `type` **replaces** the field's current value (send `"append": true` in the
+command payload to append instead). `page.pressKey` with `Enter` submits the
+surrounding form; other keys only fire synthetic events, which most sites ignore.
 
 ## 10. REST API examples
 
@@ -208,7 +221,8 @@ Hard floor in every mode: the AI can only act on a tab you've **enabled control*
 | `COMMAND_TIMEOUT` | The tab/page didn't respond in time; raise `timeoutMs` in the command. |
 | `AI_NOT_CONFIGURED` | Set the AI env vars (section 11) and restart the backend. |
 | `SCREENSHOT_FAILED` | The target tab must be the active tab in its window. |
-| Network capture empty | Off by default. Chrome forbids `debugger` as an *optional* permission, so to use `network.*`/deep console, add `"debugger"` to the `permissions` array in `apps/extension/manifest.json`, rebuild, reload, then enable the debugger setting. (This adds a Chrome install warning — that's why it's opt-in.) |
+| Network capture empty | Off by default. Chrome forbids `debugger` as an *optional* permission, so to use `network.*`/deep console: add `"debugger"` to the `permissions` array in `apps/extension/manifest.json`, rebuild, reload, then tick **Enable debugger features** in the side panel's Connection tab and Save. (This adds a Chrome install warning — that's why it's opt-in.) |
+| `401 UNAUTHORIZED` on REST | Send the pairing token: `-H 'authorization: Bearer <PAIRING_TOKEN>'` (CLI: `BROWSERPILOT_TOKEN`). |
 
 ## Project layout
 

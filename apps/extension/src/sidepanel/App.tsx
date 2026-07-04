@@ -37,8 +37,12 @@ export function App() {
     return () => { chrome.tabs.onActivated.removeListener(bump); chrome.tabs.onUpdated.removeListener(bump); };
   }, []);
 
+  const [chatPrefill, setChatPrefill] = useState("");
   const toggleTab = async () => { if (tab?.id == null) return; await sendToSw({ kind: "setTabEnabled", tabId: tab.id, enabled: !tab.enabled }); reloadTab(); };
-  const askWithElement = () => setView("chat");
+  const askWithElement = () => {
+    if (selected) setChatPrefill(`About the selected element \`${selected.selector}\` (${selected.tag}${selected.innerText ? `, "${selected.innerText.slice(0, 60)}"` : ""}): `);
+    setView("chat");
+  };
 
   const state = status?.state ?? "disconnected";
   const TABS: Array<[View, string, number?]> = [
@@ -64,7 +68,7 @@ export function App() {
         ))}
       </nav>
 
-      {view === "chat" && <ChatPanel backendUrl={settings?.backendUrl} browserId={status?.browserId} tabId={tab?.id} pageUrl={tab?.url} />}
+      {view === "chat" && <ChatPanel backendUrl={settings?.backendUrl} browserId={status?.browserId} tabId={tab?.id} pageUrl={tab?.url} token={settings?.pairingToken} prefill={chatPrefill} />}
       {view === "page" && <PageTools tabId={tab?.id} />}
       {view === "element" && <SelectedElementPanel element={selected} onAskAI={askWithElement} />}
       {view === "console" && <ConsolePanel events={consoleEvents} tabId={tab?.id} onClear={() => setConsoleEvents([])} />}

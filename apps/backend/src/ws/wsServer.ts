@@ -2,20 +2,15 @@ import type { Server } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import { eq } from "drizzle-orm";
 import { helloSchema, responseSchema, pingSchema, eventSchema, type Hello } from "@browserpilot/protocol";
-import { config } from "../config.js";
 import { db, schema } from "../db/client.js";
 import { now } from "../util/ids.js";
 import { registry } from "./connectionRegistry.js";
 import { audit } from "../services/auditLogService.js";
 import { redactSensitiveData } from "../util/redaction.js";
+import { tokenOk } from "../util/auth.js";
 import { log } from "../util/logger.js";
 
-function authOk(hello: Hello): boolean {
-  if (config.pairingToken) return hello.token === config.pairingToken;
-  // No token configured: only allow empty token in development.
-  if (config.isDev) return true;
-  return false;
-}
+const authOk = (hello: Hello) => tokenOk(hello.token);
 
 function onHello(ws: WebSocket, hello: Hello) {
   if (!authOk(hello)) {
@@ -105,14 +100,14 @@ export function attachWsServer(server: Server) {
     ws.on("error", (e) => log.warn("ws error", e));
   });
 
-  // Mark stale browsers offline (no heartbeat for 60s).
+  // Mark stale browsers offline (no heartbeat for 60s). unref: don't keep the process alive.
   setInterval(() => {
     for (const s of registry.all()) {
       if (now() - s.lastSeenAt > 60_000) {
         db.update(schema.browsers).set({ status: "offline", updatedAt: now() }).where(eq(schema.browsers.id, s.browserId)).run();
       }
     }
-  }, 15_000);
+  }, 15_000).unref?.();
 
   return wss;
 }

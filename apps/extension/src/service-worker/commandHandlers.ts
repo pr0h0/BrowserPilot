@@ -37,10 +37,7 @@ export async function dispatchCommand(command: Command): Promise<CommandResponse
       return ok(id, await debuggerHandlers[type](payload, tabId));
     }
 
-    // 3. AI commands run on the backend (it holds the API keys), not in the extension.
-    if (type.startsWith("ai.")) return fail(id, "INVALID_COMMAND", "AI commands run on the backend — use POST /api/chat.");
-
-    // 4. Content-script commands (page.* / console.*) — require an enabled tab unless always-allowed.
+    // 3. Content-script commands (page.* / console.*) — require an enabled tab unless always-allowed.
     const resolvedTab = await resolveTabId(tabId);
     if (!ALWAYS_ALLOWED.includes(type as any) && !isTabEnabled(resolvedTab)) {
       return fail(id, "TAB_NOT_ENABLED", `Control is not enabled for tab ${resolvedTab}. Enable it from the popup or side panel.`);

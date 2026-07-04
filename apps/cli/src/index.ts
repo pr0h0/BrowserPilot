@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 // BrowserPilot CLI — thin wrapper over the backend REST API.
 const BASE = process.env.BROWSERPILOT_URL ?? "http://localhost:9876";
+const TOKEN = process.env.BROWSERPILOT_TOKEN ?? process.env.PAIRING_TOKEN ?? "";
 
 // --- tiny arg parser: collects --flags (with values) and positionals ---
 function parseArgs(argv: string[]) {
@@ -19,7 +20,9 @@ function parseArgs(argv: string[]) {
 }
 
 async function api(path: string, init?: RequestInit) {
-  const res = await fetch(`${BASE}${path}`, { headers: { "content-type": "application/json" }, ...init });
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (TOKEN) headers.authorization = `Bearer ${TOKEN}`;
+  const res = await fetch(`${BASE}${path}`, { headers, ...init });
   const text = await res.text();
   let body: any; try { body = JSON.parse(text); } catch { body = text; }
   if (!res.ok) { console.error(`HTTP ${res.status}:`, typeof body === "string" ? body : JSON.stringify(body, null, 2)); process.exit(1); }
@@ -70,7 +73,8 @@ Usage: browserpilot <command> [options]
   ask             --browser <id> --tab <tabId> "prompt" [--attach-page --attach-console --attach-screenshot --attach-element]
 
 If exactly one browser is connected, --browser may be omitted.
-Backend URL via BROWSERPILOT_URL (default http://localhost:9876).`;
+Backend URL via BROWSERPILOT_URL (default http://localhost:9876).
+Pairing token via BROWSERPILOT_TOKEN or PAIRING_TOKEN (required unless backend runs in dev mode without one).`;
 
 async function main() {
   const [command, ...rest] = process.argv.slice(2);

@@ -15,8 +15,6 @@ export const COMMAND_TYPES = [
   "page.scroll", "page.hover", "page.waitForSelector", "page.waitForText",
   // console
   "console.getRecent", "console.clearRecent",
-  // ai (handled in extension for convenience; backend also has /api/chat)
-  "ai.askCurrentPage", "ai.askSelectedElement", "ai.askWithScreenshot", "ai.askWithConsole",
   // phase 2 debugger / network
   "debugger.attach", "debugger.detach", "network.enable", "network.disable",
   "network.getRecent", "network.clearRecent", "console.enableDeep", "console.disableDeep",

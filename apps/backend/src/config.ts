@@ -1,12 +1,21 @@
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
 // Bun auto-loads .env. We resolve config once here.
 const env = process.env;
 
+// Relative DATABASE_URL/SCREENSHOT_DIR are resolved against apps/backend (not CWD),
+// so running from the repo root and from apps/backend hits the same files.
+const backendRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const fromBackendRoot = (p: string) => resolve(backendRoot, p);
+
 export const config = {
   nodeEnv: env.NODE_ENV ?? "development",
+  host: env.HOST ?? "127.0.0.1",
   port: Number(env.PORT ?? 9876),
-  databaseUrl: (env.DATABASE_URL ?? "file:./data/browserpilot.sqlite").replace(/^file:/, ""),
+  databaseUrl: fromBackendRoot((env.DATABASE_URL ?? "file:./data/browserpilot.sqlite").replace(/^file:/, "")),
   pairingToken: env.PAIRING_TOKEN ?? "",
-  screenshotDir: env.SCREENSHOT_DIR ?? "./data/screenshots",
+  screenshotDir: fromBackendRoot(env.SCREENSHOT_DIR ?? "./data/screenshots"),
   ai: {
     // provider: openai | deepseek | openrouter | anthropic. openai/deepseek/openrouter
     // all speak the OpenAI chat-completions API; anthropic uses its native messages API.

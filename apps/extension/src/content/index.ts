@@ -33,7 +33,7 @@ async function handle(type: string, payload: any): Promise<unknown> {
     case "page.stopElementPicker": stopPicker(); return { stopped: true };
 
     case "page.click": return act.click(payload.selector);
-    case "page.type": return act.type(payload.selector, String(payload.text ?? ""));
+    case "page.type": return act.type(payload.selector, String(payload.text ?? ""), Boolean(payload.append));
     case "page.clear": return act.clear(payload.selector);
     case "page.focus": return act.focus(payload.selector);
     case "page.pressKey": return act.pressKey(payload.selector, payload.key);

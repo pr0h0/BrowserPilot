@@ -144,6 +144,9 @@ async function step(runId: string): Promise<AgentStep> {
 }
 
 async function runTool(s: Session, call: ToolCall): Promise<{ ok: boolean; str: string; summary: string }> {
+  // Trust boundary: the TAB_NOT_ENABLED "hard floor" is enforced by the extension's
+  // command dispatcher (commandHandlers.ts), which every executeCommand goes through.
+  // Do not add a bypass here that talks to the extension by any other path.
   const map = TOOL_TO_COMMAND[call.name];
   if (!map) return { ok: false, str: JSON.stringify({ error: `unknown tool ${call.name}` }), summary: "unknown tool" };
   const payload = map.payload ? map.payload(call.args) : undefined;

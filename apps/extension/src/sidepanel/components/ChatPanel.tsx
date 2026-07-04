@@ -15,7 +15,7 @@ const MODES: Array<[AgentMode, string, string]> = [
 
 interface Pending { runId: string; assistantText: string; actions: AgentAction[]; transcript: AgentTranscriptItem[] }
 
-export function ChatPanel({ backendUrl, browserId, tabId, pageUrl }: { backendUrl?: string; browserId?: string; tabId?: number; pageUrl?: string }) {
+export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefill }: { backendUrl?: string; browserId?: string; tabId?: number; pageUrl?: string; token?: string; prefill?: string }) {
   const key = pageKey(pageUrl);
   const [chats, setChats] = useState<Chats>({});
   const [prompt, setPrompt] = useState("");
@@ -35,6 +35,7 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl }: { backendUr
   }, []);
   useEffect(() => { endRef.current?.scrollIntoView({ block: "end" }); }, [history.length, key, pending, busy]);
   useEffect(() => { setPending(null); }, [key]); // drop a stale approval when switching page
+  useEffect(() => { if (prefill) setPrompt(prefill); }, [prefill]); // "Send to AI" from the element panel
 
   const persist = (next: Chats) => { setChats(next); chrome.storage.local.set({ [STORE]: next }); };
   const append = (msgs: Msg[], extra: Msg[]) => persist({ ...chats, [key]: [...msgs, ...extra] });
@@ -42,6 +43,7 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl }: { backendUr
   const changeMode = (m: AgentMode) => { setMode(m); chrome.storage.local.set({ [MODE_STORE]: m }); };
 
   const base = () => httpBaseFromWs(backendUrl!);
+  const headers = (): Record<string, string> => ({ "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) });
 
   // Apply a backend AgentStep: either finish (push assistant msg) or surface an approval card.
   const applyStep = (step: AgentStep, priorHistory: Msg[]) => {
@@ -63,7 +65,7 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl }: { backendUr
     persist({ ...chats, [key]: withUser }); setPrompt("");
     try {
       const res = await fetch(`${base()}/api/agent/run`, {
-        method: "POST", headers: { "content-type": "application/json" },
+        method: "POST", headers: headers(),
         body: JSON.stringify({ browserId, tabId, prompt, mode, attachScreenshot: attachShot }),
       });
       applyStep(await res.json() as AgentStep, withUser);
@@ -77,7 +79,7 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl }: { backendUr
     const p = pending; setPending(null);
     try {
       const res = await fetch(`${base()}/api/agent/approve`, {
-        method: "POST", headers: { "content-type": "application/json" },
+        method: "POST", headers: headers(),
         body: JSON.stringify({ runId: p.runId, approve }),
       });
       applyStep(await res.json() as AgentStep, history);

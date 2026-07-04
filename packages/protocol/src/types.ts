@@ -25,22 +25,6 @@ export type AgentStep =
   | { status: "error"; runId: string; error: { code: string; message: string } };
 export interface AgentTranscriptItem { tool: string; args: Record<string, unknown>; ok: boolean; resultSummary: string }
 
-export interface InteractiveElement {
-  index: number;
-  tag: string;
-  role: string;
-  text: string;
-  selector: string;
-  bgColor: string;
-  color: string;
-  ariaLabel?: string;
-  title?: string;
-  near?: string;
-  href?: string;
-  disabled: boolean;
-  rect: { x: number; y: number; width: number; height: number };
-}
-
 export interface SelectedElement {
   tag: string;
   id: string;

@@ -22,14 +22,14 @@ export function click(selector: string) {
   return { clicked: selector, elementText: label, urlBefore: before, url: location.href, title: document.title, navigated: location.href !== before };
 }
 
-export function type(selector: string, text: string) {
+export function type(selector: string, text: string, append = false) {
   const el = find(selector) as HTMLInputElement;
   refuseIfPassword(el);
   el.focus();
-  el.value = (el.value ?? "") + text;
+  el.value = append ? (el.value ?? "") + text : text;
   el.dispatchEvent(new Event("input", { bubbles: true }));
   el.dispatchEvent(new Event("change", { bubbles: true }));
-  return { typed: text.length, selector };
+  return { typed: text.length, selector, mode: append ? "appended" : "replaced" };
 }
 
 export function clear(selector: string) {
@@ -43,8 +43,16 @@ export function focus(selector: string) { find(selector).focus(); return { focus
 
 export function pressKey(selector: string | undefined, key: string) {
   const el = selector ? find(selector) : (document.activeElement as HTMLElement) ?? document.body;
-  for (const t of ["keydown", "keypress", "keyup"]) el.dispatchEvent(new KeyboardEvent(t, { key, bubbles: true }));
-  return { pressed: key };
+  const keydownAllowed = el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+  for (const t of ["keypress", "keyup"]) el.dispatchEvent(new KeyboardEvent(t, { key, bubbles: true, cancelable: true }));
+  // Synthetic key events never trigger native behavior (they're untrusted), so emulate the
+  // one that matters: Enter submits the surrounding form — unless a handler preventDefault'd.
+  let submitted = false;
+  if (key === "Enter" && keydownAllowed) {
+    const form = (el as HTMLInputElement).form ?? el.closest?.("form");
+    if (form) { form.requestSubmit(); submitted = true; }
+  }
+  return { pressed: key, submittedForm: submitted };
 }
 
 export function scroll(payload: { selector?: string; x?: number; y?: number; toBottom?: boolean }) {

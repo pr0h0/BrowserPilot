@@ -9,6 +9,7 @@
     "dev:extension": "bun --filter @browserpilot/extension dev",
     "dev:cli": "bun --filter @browserpilot/cli dev",
     "build": "bun --filter '*' build",
+    "test": "bun test packages apps",
     "typecheck": "bun --filter '*' typecheck",
     "db:generate": "bun --filter @browserpilot/backend db:generate",
     "db:migrate": "bun --filter @browserpilot/backend db:migrate",

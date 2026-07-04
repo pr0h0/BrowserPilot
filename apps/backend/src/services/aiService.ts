@@ -105,7 +105,7 @@ export async function runChat(req: ChatRequest) {
 
   if (online && a.pageText) {
     const r = await grab("page.extractText", { maxChars: 20_000 });
-    if (r.ok) contextParts.push(`# Page text\n${JSON.stringify(r.result)}`);
+    if (r.ok) contextParts.push(`# Page text\n${JSON.stringify(redactSensitiveData(r.result))}`);
   }
   if (online && a.selectedElement) {
     const r = await grab("page.getSelectedElement");
@@ -113,7 +113,7 @@ export async function runChat(req: ChatRequest) {
   }
   if (online && a.console) {
     const r = await grab("console.getRecent");
-    if (r.ok) contextParts.push(`# Recent console events\n${JSON.stringify(r.result)}`);
+    if (r.ok) contextParts.push(`# Recent console events\n${JSON.stringify(redactSensitiveData(r.result))}`);
   }
   if (online && a.network) {
     const r = await grab("network.getRecent");
