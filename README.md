@@ -193,11 +193,15 @@ Set in `.env`. Four providers are supported:
 
 ## 11b. AI agent (clicking / typing)
 
-The **Chat** tab is an agent: it can *act* on the page, not just describe it. It has tools
-(`list_interactive`, `extract_text`, `get_console`, `get_selected_element`, `click`, `type`)
-and runs a tool-calling loop. To click "the red Buy button", it calls `list_interactive`
-(which returns each element's selector **and rendered color/text**), matches your description,
-then calls `click` with the exact selector — no coordinate guessing.
+The **Chat** tab is an agent: it can *act* on the page, not just describe it. Its tools:
+read — `list_interactive`, `extract_text`, `get_console`, `get_selected_element`, `wait_for`,
+`scroll`, `screenshot` (the model *sees* the captured image, vision models only);
+act — `click`, `type`, `press_key`, `navigate`. To click "the red Buy button", it calls
+`list_interactive` (which returns each element's selector **and rendered color/text**), matches
+your description, then calls `click` with the exact selector — no coordinate guessing.
+Multi-step tasks work: it can navigate, `wait_for` the new page, re-list, and continue.
+Each run is grounded with the current tab's URL/title, and the panel sends recent chat
+history so follow-up questions keep their context.
 
 **Autonomy** is a dropdown in the Chat tab:
 

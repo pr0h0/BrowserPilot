@@ -42,7 +42,16 @@ export async function dispatchCommand(command: Command): Promise<CommandResponse
     if (!ALWAYS_ALLOWED.includes(type as any) && !isTabEnabled(resolvedTab)) {
       return fail(id, "TAB_NOT_ENABLED", `Control is not enabled for tab ${resolvedTab}. Enable it from the popup or side panel.`);
     }
-    const res = await sendToContent(resolvedTab, type, payload ?? {}, timeoutMs - 500);
+    let res = await sendToContent(resolvedTab, type, payload ?? {}, timeoutMs - 500);
+    // Self-heal: tabs opened before the extension loaded have no content script — inject and retry
+    // once instead of telling the user to reload. (Fails on chrome:// pages; original error stands.)
+    if (!res?.ok && res?.error?.code === "CONTENT_SCRIPT_FAILED") {
+      try {
+        const files = chrome.runtime.getManifest().content_scripts?.[0]?.js ?? [];
+        await chrome.scripting.executeScript({ target: { tabId: resolvedTab }, files });
+        res = await sendToContent(resolvedTab, type, payload ?? {}, timeoutMs - 500);
+      } catch { /* keep the original error */ }
+    }
     if (res?.ok) return ok(id, res.result);
     return { id, ok: false, error: res?.error ?? { code: "CONTENT_SCRIPT_FAILED", message: "no response from content script" } };
   } catch (e) {

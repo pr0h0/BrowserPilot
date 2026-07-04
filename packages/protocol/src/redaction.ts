@@ -22,6 +22,9 @@ const KV_PATTERN = new RegExp(
 
 /** Scrub secret-shaped values embedded in a plain string. */
 export function redactText(input: string): string {
+  // Skip huge strings (base64 screenshots etc.): page text is capped well below this,
+  // and regex-scanning megabytes of base64 is O(n²)-ish — it once wedged the backend.
+  if (input.length > 100_000) return input;
   let out = input;
   for (const p of VALUE_PATTERNS) out = out.replace(p, "[REDACTED]");
   return out.replace(KV_PATTERN, (_m, key, sep) => `${key}${sep}[REDACTED]`);

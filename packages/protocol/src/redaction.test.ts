@@ -71,4 +71,11 @@ describe("redactText (free-text scrubbing)", () => {
     const s = "The user clicked the Buy button and the page reloaded. Total: $19.99";
     expect(redactText(s)).toBe(s);
   });
+
+  test("skips huge strings (screenshot base64) instead of regex-scanning them", () => {
+    const huge = "sk-" + "A".repeat(200_000);
+    const start = performance.now();
+    expect(redactText(huge)).toBe(huge); // returned untouched, instantly
+    expect(performance.now() - start).toBeLessThan(50);
+  });
 });

@@ -66,7 +66,10 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefil
     try {
       const res = await fetch(`${base()}/api/agent/run`, {
         method: "POST", headers: headers(),
-        body: JSON.stringify({ browserId, tabId, prompt, mode, attachScreenshot: attachShot }),
+        body: JSON.stringify({
+          browserId, tabId, prompt, mode, attachScreenshot: attachShot,
+          history: history.slice(-12).map((m) => ({ role: m.role, content: m.content })),
+        }),
       });
       applyStep(await res.json() as AgentStep, withUser);
     } catch (e) { append(withUser, [{ role: "assistant", content: `⚠ ${String(e)}` }]); }

@@ -21,6 +21,15 @@ setNetworkSink((e) => socket.sendEvent("network", e as any));
   await loadEnabledTabs();
   socket.connect();
 })();
+
+// Register the MAIN-world console hook (static file: bundler loaders can't run in the
+// page world, so it can't go through the manifest content_scripts pipeline).
+chrome.scripting.getRegisteredContentScripts({ ids: ["bp-main-hook"] })
+  .then((existing) => existing.length ? null : chrome.scripting.registerContentScripts([{
+    id: "bp-main-hook", js: ["mainWorldHook.js"], matches: ["<all_urls>"],
+    runAt: "document_start", world: "MAIN", persistAcrossSessions: true,
+  }]))
+  .catch((e) => console.warn("main-world hook registration failed", e));
 chrome.runtime.onStartup?.addListener(() => socket.connect());
 
 // Open side panel is requested from popup directly (needs user gesture). Make the

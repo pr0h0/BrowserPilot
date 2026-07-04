@@ -43,9 +43,17 @@ export async function executeCommand(browserId: string, cmd: RestCommand): Promi
     }
   }
 
+  // Don't persist screenshot payloads into the DB — the PNG is already on disk
+  // (storedPath); a base64 dataUrl per row once ballooned the DB to 200MB.
+  let persistable = response.result ?? null;
+  if (persistable && typeof persistable === "object" && typeof (persistable as any).dataUrl === "string") {
+    const r = persistable as Record<string, unknown>;
+    persistable = { ...r, dataUrl: `[${(r.dataUrl as string).length} chars, stored at ${r.storedPath ?? "n/a"}]` };
+  }
+
   db.update(schema.commands).set({
     status: response.ok ? "succeeded" : (response.error?.code === "COMMAND_TIMEOUT" ? "timeout" : "failed"),
-    resultJson: response.ok ? JSON.stringify(redactSensitiveData(response.result ?? null)) : null,
+    resultJson: response.ok ? JSON.stringify(redactSensitiveData(persistable)) : null,
     errorJson: response.ok ? null : JSON.stringify(response.error ?? null),
     completedAt: now(),
   }).where(eq(schema.commands.id, commandId)).run();

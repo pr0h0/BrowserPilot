@@ -112,6 +112,8 @@ export const agentRunSchema = z.object({
   prompt: z.string().min(1),
   mode: agentModeSchema.default("approve"),
   attachScreenshot: z.boolean().optional(), // hybrid: send a screenshot for visual context
+  // Prior turns of this conversation (client-kept), so follow-ups have context.
+  history: z.array(z.object({ role: z.enum(["user", "assistant"]), content: z.string() })).max(40).optional(),
 });
 
 export const agentApproveSchema = z.object({

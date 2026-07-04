@@ -2,6 +2,7 @@ import type { AgentRun, AgentStep, AgentMode, AgentTranscriptItem } from "@brows
 import { config } from "../config.js";
 import { id } from "../util/ids.js";
 import { executeCommand } from "./commandService.js";
+import { registry } from "../ws/connectionRegistry.js";
 import { audit } from "./auditLogService.js";
 import { AiError, isAiConfigured } from "./aiService.js";
 import { redactSensitiveData } from "../util/redaction.js";
@@ -20,6 +21,10 @@ Finding elements:
 Acting:
 - After a click, the result includes url/navigated/elementText — use it to confirm it worked. Do not
   re-list the page just to "check" unless the result shows the page actually changed.
+- type REPLACES the field's value. press_key with "Enter" submits the surrounding form.
+- After navigate (or a click that navigated), the page is new: use wait_for on a selector you expect,
+  then list_interactive again — old selectors are stale.
+- Use screenshot when text alone is ambiguous (layout, colors, images); the image arrives in the next message.
 - Prefer the fewest, safest, reversible steps. Never type into password fields.
 - If a tool reports the tab is not enabled, tell the user to enable control on the tab and stop.
 
@@ -31,19 +36,29 @@ const TOOL_TO_COMMAND: Record<string, { type: string; payload?: (a: any) => unkn
   extract_text: { type: "page.extractText", payload: () => ({ maxChars: 8000 }) },
   get_selected_element: { type: "page.getSelectedElement" },
   get_console: { type: "console.getRecent" },
+  wait_for: { type: "page.waitForSelector", payload: (a) => ({ selector: a.selector, timeoutMs: Math.min(Number(a.timeoutMs ?? 10_000), 30_000) }) },
+  scroll: { type: "page.scroll", payload: (a) => ({ selector: a.selector, toBottom: a.toBottom }) },
+  screenshot: { type: "tabs.captureVisible" },
   click: { type: "page.click", payload: (a) => ({ selector: a.selector }) },
   type: { type: "page.type", payload: (a) => ({ selector: a.selector, text: a.text }) },
+  press_key: { type: "page.pressKey", payload: (a) => ({ selector: a.selector, key: a.key }) },
+  navigate: { type: "tabs.navigate", payload: (a) => ({ url: a.url }) },
 };
-const READ_TOOLS = ["list_interactive", "extract_text", "get_selected_element", "get_console"];
-const ACTION_TOOLS = ["click", "type"];
+const READ_TOOLS = ["list_interactive", "extract_text", "get_selected_element", "get_console", "wait_for", "scroll", "screenshot"];
+const ACTION_TOOLS = ["click", "type", "press_key", "navigate"];
 
 const TOOL_SCHEMAS: Record<string, { description: string; params: object }> = {
   list_interactive: { description: "List clickable/typeable elements with their text, CSS selector, and rendered bgColor/color. Call this before acting to find the right element.", params: { type: "object", properties: {} } },
   extract_text: { description: "Get the visible text of the current page.", params: { type: "object", properties: {} } },
   get_selected_element: { description: "Get the element the user picked with the element picker, if any.", params: { type: "object", properties: {} } },
   get_console: { description: "Get recent console errors and warnings captured on the page.", params: { type: "object", properties: {} } },
+  wait_for: { description: "Wait until a CSS selector exists on the page (use after navigation or a click that changes the page).", params: { type: "object", properties: { selector: { type: "string" }, timeoutMs: { type: "number" } }, required: ["selector"] } },
+  scroll: { description: "Scroll an element into view (selector) or to the bottom of the page (toBottom).", params: { type: "object", properties: { selector: { type: "string" }, toBottom: { type: "boolean" } } } },
+  screenshot: { description: "Capture the visible tab; the image is attached to the next message so you can see the page.", params: { type: "object", properties: {} } },
   click: { description: "Click an element by exact CSS selector (from list_interactive).", params: { type: "object", properties: { selector: { type: "string" } }, required: ["selector"] } },
-  type: { description: "Type text into an input/textarea by exact CSS selector.", params: { type: "object", properties: { selector: { type: "string" }, text: { type: "string" } }, required: ["selector", "text"] } },
+  type: { description: "Type text into an input/textarea by exact CSS selector. REPLACES the current value.", params: { type: "object", properties: { selector: { type: "string" }, text: { type: "string" } }, required: ["selector", "text"] } },
+  press_key: { description: "Press a key (e.g. Enter) on an element or the focused element. Enter submits the surrounding form.", params: { type: "object", properties: { selector: { type: "string" }, key: { type: "string" } }, required: ["key"] } },
+  navigate: { description: "Navigate the current tab to a URL.", params: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
 };
 
 interface ToolCall { id: string; name: string; args: Record<string, unknown> }
@@ -52,9 +67,10 @@ interface Session {
   system: string; messages: any[]; mode: AgentMode;
   browserId: string; tabId?: number;
   transcript: AgentTranscriptItem[]; pending?: ToolCall[]; iterations: number; createdAt: number;
+  pendingImages: string[]; // screenshots captured by the screenshot tool, flushed after the tool batch
 }
 const sessions = new Map<string, Session>();
-const MAX_STEPS = 14;
+const MAX_STEPS = 20;
 
 function toolNames(mode: AgentMode) {
   return mode === "read" ? READ_TOOLS : [...READ_TOOLS, ...ACTION_TOOLS];
@@ -72,10 +88,22 @@ export async function agentRun(req: AgentRun): Promise<AgentStep> {
     if (r.ok && r.result && typeof (r.result as any).dataUrl === "string") image = (r.result as any).dataUrl;
   }
 
+  // Ground the model in the page it's on (Claude-in-Chrome style): current tab url/title.
+  let pageCtx = "";
+  if (registry.isOnline(req.browserId)) {
+    const r = (await executeCommand(req.browserId, { type: "tabs.getActive", target: { tabId: req.tabId } })).response;
+    if (r.ok && r.result) {
+      const t = r.result as { url?: string; title?: string };
+      pageCtx = `[Current page: ${t.title ?? "(untitled)"} — ${t.url ?? "?"}]\n\n`;
+    }
+  }
+  const history = (req.history ?? []).slice(-12).map((h) => ({ role: h.role, content: h.content }));
+
   const session: Session = {
     provider: config.ai.provider, model: config.ai.model, apiKey: config.ai.apiKey, baseUrl: config.ai.baseUrl,
-    system: SYSTEM, messages: [buildUserTurn(config.ai.provider, req.prompt, image)],
+    system: SYSTEM, messages: [...history, buildUserTurn(config.ai.provider, pageCtx + req.prompt, image)],
     mode: req.mode, browserId: req.browserId, tabId: req.tabId, transcript: [], iterations: 0, createdAt: Date.now(),
+    pendingImages: [],
   };
   sessions.set(runId, session);
   audit("agent:run", req.browserId, { mode: req.mode, tabId: req.tabId, prompt: req.prompt.slice(0, 200) });
@@ -90,13 +118,14 @@ export async function agentApprove(runId: string, approve: boolean): Promise<Age
     for (const call of pending) {
       if (approve) {
         const res = await runTool(s, call);
-        pushToolResult(s, call, res.str);
+        pushToolResult(s, call, res.str, res.image);
         s.transcript.push({ tool: call.name, args: call.args, ok: res.ok, resultSummary: res.summary });
       } else {
         pushToolResult(s, call, JSON.stringify({ rejected: true, note: "User rejected this action." }));
         s.transcript.push({ tool: call.name, args: call.args, ok: false, resultSummary: "rejected by user" });
       }
     }
+    flushImages(s);
   }
   audit("agent:approve", s.browserId, { runId, approve, actions: pending?.map((p) => p.name) });
   return step(runId);
@@ -134,16 +163,17 @@ async function step(runId: string): Promise<AgentStep> {
         continue;
       }
       const res = await runTool(s, call);
-      pushToolResult(s, call, res.str);
+      pushToolResult(s, call, res.str, res.image);
       s.transcript.push({ tool: call.name, args: call.args, ok: res.ok, resultSummary: res.summary });
     }
+    flushImages(s);
   }
   const transcript = s.transcript;
   sessions.delete(runId);
   return { status: "done", runId, answer: "Stopped after the maximum number of steps.", transcript };
 }
 
-async function runTool(s: Session, call: ToolCall): Promise<{ ok: boolean; str: string; summary: string }> {
+async function runTool(s: Session, call: ToolCall): Promise<{ ok: boolean; str: string; summary: string; image?: string }> {
   // Trust boundary: the TAB_NOT_ENABLED "hard floor" is enforced by the extension's
   // command dispatcher (commandHandlers.ts), which every executeCommand goes through.
   // Do not add a bypass here that talks to the extension by any other path.
@@ -154,6 +184,11 @@ async function runTool(s: Session, call: ToolCall): Promise<{ ok: boolean; str: 
   if (!response.ok) {
     const msg = response.error?.message ?? "failed";
     return { ok: false, str: JSON.stringify({ error: response.error?.code, message: msg }), summary: `${response.error?.code}: ${msg}`.slice(0, 120) };
+  }
+  if (call.name === "screenshot") {
+    const r = response.result as { dataUrl?: string; url?: string; title?: string };
+    const image = typeof r?.dataUrl === "string" ? r.dataUrl : undefined;
+    return { ok: true, str: JSON.stringify({ captured: Boolean(image), url: r?.url, title: r?.title }), summary: "screenshot captured", image };
   }
   const result = redactSensitiveData(response.result ?? {});
   // list_interactive can hold dozens of elements — give it room so the model sees the WHOLE page,
@@ -180,9 +215,29 @@ function buildUserTurn(provider: string, prompt: string, image?: string): any {
   return { role: "user", content: [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: image } }] };
 }
 
-function pushToolResult(s: Session, call: ToolCall, content: string) {
-  if (s.provider === "anthropic") s.messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: call.id, content }] });
-  else s.messages.push({ role: "tool", tool_call_id: call.id, content });
+function pushToolResult(s: Session, call: ToolCall, content: string, image?: string) {
+  if (s.provider === "anthropic") {
+    // Anthropic: an image can ride inside the tool_result itself.
+    const inner: any[] = [{ type: "text", text: content }];
+    const m = image ? /^data:(image\/\w+);base64,(.+)$/s.exec(image) : null;
+    if (m) inner.push({ type: "image", source: { type: "base64", media_type: m[1], data: m[2] } });
+    s.messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: call.id, content: inner }] });
+  } else {
+    // OpenAI: tool messages are text-only; queue the image and flush it after the
+    // whole tool batch (a user message may not interrupt tool results).
+    s.messages.push({ role: "tool", tool_call_id: call.id, content });
+    if (image) s.pendingImages.push(image);
+  }
+}
+
+function flushImages(s: Session) {
+  for (const img of s.pendingImages) {
+    s.messages.push({ role: "user", content: [
+      { type: "text", text: "Screenshot from the screenshot tool:" },
+      { type: "image_url", image_url: { url: img } },
+    ] });
+  }
+  s.pendingImages = [];
 }
 
 async function llmTurn(s: Session): Promise<{ text: string; toolCalls: ToolCall[] }> {

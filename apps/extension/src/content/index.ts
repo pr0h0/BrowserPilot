@@ -6,8 +6,14 @@ import { initConsoleCapture, getRecentConsole, clearRecentConsole } from "./cons
 
 let lastSelected: SelectedElement | null = null;
 
+// The SW may inject this file into a tab that already has it (self-heal path);
+// bail out of the second copy so listeners/console hooks aren't doubled.
+const FLAG = "__browserpilot_cs";
+const alreadyLoaded = (window as any)[FLAG] === true;
+(window as any)[FLAG] = true;
+
 // Push captured console errors up to the service worker (→ backend + UI).
-initConsoleCapture((event) => {
+if (!alreadyLoaded) initConsoleCapture((event) => {
   chrome.runtime.sendMessage({ kind: "consoleEvent", event }).catch(() => {});
 });
 
@@ -49,7 +55,7 @@ async function handle(type: string, payload: any): Promise<unknown> {
   }
 }
 
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+if (!alreadyLoaded) chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (!msg || msg.__bp !== true) return;
   // Allow re-describing an element from a CSS selector (used by side panel "send to AI").
   if (msg.action === "__describe" && msg.selector) {
