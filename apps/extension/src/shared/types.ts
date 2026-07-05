@@ -6,6 +6,7 @@ export interface Settings {
   browserId: string;
   browserName: string;
   enableDebugger: boolean;
+  maxSteps: number; // agent turns per run; 0 = unlimited
 }
 
 export const DEFAULT_BACKEND_URL = "ws://localhost:9876/ws";

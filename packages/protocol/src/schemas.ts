@@ -114,6 +114,8 @@ export const agentRunSchema = z.object({
   attachScreenshot: z.boolean().optional(), // hybrid: send a screenshot for visual context
   // Prior turns of this conversation (client-kept), so follow-ups have context.
   history: z.array(z.object({ role: z.enum(["user", "assistant"]), content: z.string() })).max(40).optional(),
+  // Max LLM turns for this run. Omit → server default (100). 0 → unlimited (Stop is the safeguard).
+  maxSteps: z.number().int().min(0).max(100_000).optional(),
 });
 
 export const agentApproveSchema = z.object({

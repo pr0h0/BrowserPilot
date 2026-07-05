@@ -32,8 +32,8 @@ const MODES: Array<[AgentMode, string, string]> = [
 interface Live { runId: string; steps: AgentTranscriptItem[]; assistantText: string;
   pending?: { actions: AgentAction[] }; status: string }
 
-export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefill }:
-  { backendUrl?: string; browserId?: string; tabId?: number; pageUrl?: string; token?: string; prefill?: string }) {
+export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefill, maxSteps }:
+  { backendUrl?: string; browserId?: string; tabId?: number; pageUrl?: string; token?: string; prefill?: string; maxSteps?: number }) {
   const [sessions, setSessions] = useState<Sessions>({});
   const [currentId, setCurrentId] = useState<string>("");
   const [showList, setShowList] = useState(false);
@@ -133,7 +133,7 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefil
     setMessages(withUser); setPrompt("");
     try {
       const res = await api.post("/api/agent/run", { browserId, tabId, prompt, mode, attachScreenshot: attachShot,
-        history: history.slice(-12).map((m) => ({ role: m.role, content: m.content })) });
+        history: history.slice(-12).map((m) => ({ role: m.role, content: m.content })), maxSteps });
       await pollRun(res.runId, withUser);
     } catch (e) { append(withUser, [{ role: "assistant", content: `⚠ ${String(e)}` }]); }
   };

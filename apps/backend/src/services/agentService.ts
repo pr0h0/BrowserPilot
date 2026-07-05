@@ -77,12 +77,12 @@ interface Session {
   headless: boolean;                          // scheduled run: never pauses for approval
   transcript: AgentTranscriptItem[];
   events: AgentEvent[]; status: AgentStatus; aborted: boolean;
-  pending?: ToolCall[]; iterations: number; createdAt: number;
+  pending?: ToolCall[]; iterations: number; maxSteps: number; createdAt: number;
   pendingImages: string[];
   elementLabels: Map<string, string>;         // selector → visible text, for risk classification
 }
 const sessions = new Map<string, Session>();
-const MAX_STEPS = 20;
+const DEFAULT_MAX_STEPS = 100; // per-run turn ceiling when the client doesn't set one; 0 = unlimited
 
 const toolNames = (mode: AgentMode) => (mode === "read" ? READ_TOOLS : [...READ_TOOLS, ...ACTION_TOOLS]);
 const emit = (s: Session, ev: AgentEvent) => { s.events.push(ev); };
@@ -110,7 +110,8 @@ export async function agentRun(req: AgentRun & { headless?: boolean }): Promise<
     provider: config.ai.provider, model: config.ai.model, apiKey: config.ai.apiKey, baseUrl: config.ai.baseUrl,
     system: SYSTEM, messages: [...history, buildUserTurn(config.ai.provider, pageCtx + req.prompt, image)],
     mode: req.mode, browserId: req.browserId, tabId: req.tabId, domain, headless: Boolean(req.headless),
-    transcript: [], events: [], status: "running", aborted: false, iterations: 0, createdAt: Date.now(),
+    transcript: [], events: [], status: "running", aborted: false, iterations: 0,
+    maxSteps: req.maxSteps === undefined ? DEFAULT_MAX_STEPS : req.maxSteps, createdAt: Date.now(),
     pendingImages: [], elementLabels: new Map(),
   };
   sessions.set(runId, s);
@@ -160,7 +161,8 @@ async function drive(runId: string): Promise<void> {
   const s = sessions.get(runId);
   if (!s) return;
   try {
-    while (s.iterations < MAX_STEPS) {
+    // maxSteps === 0 → unlimited; the user's Stop button (and session sweep) are the safeguards.
+    while (s.maxSteps === 0 || s.iterations < s.maxSteps) {
       if (s.aborted) return finish(s, "Stopped by user.");
       s.iterations++;
 

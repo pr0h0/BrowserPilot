@@ -9,9 +9,17 @@ export function ConnectionPanel({ status, tab, onTabToggle }: { status: Connecti
   const { settings, reload } = useSettings();
   const [url, setUrl] = useState(""); const [token, setToken] = useState(""); const [name, setName] = useState("");
   const [dbg, setDbg] = useState(false);
-  useEffect(() => { if (settings) { setUrl(settings.backendUrl); setToken(settings.pairingToken); setName(settings.browserName); setDbg(settings.enableDebugger); } }, [settings]);
+  const [steps, setSteps] = useState(100); const [unlimited, setUnlimited] = useState(false);
+  useEffect(() => { if (settings) {
+    setUrl(settings.backendUrl); setToken(settings.pairingToken); setName(settings.browserName); setDbg(settings.enableDebugger);
+    setUnlimited(settings.maxSteps === 0); setSteps(settings.maxSteps || 100);
+  } }, [settings]);
 
-  const save = async () => { await sendToSw({ kind: "saveSettings", settings: { backendUrl: url, pairingToken: token, browserName: name, enableDebugger: dbg } }); reload(); };
+  const save = async () => {
+    const maxSteps = unlimited ? 0 : Math.max(1, Math.min(100000, Math.round(steps) || 100));
+    await sendToSw({ kind: "saveSettings", settings: { backendUrl: url, pairingToken: token, browserName: name, enableDebugger: dbg, maxSteps } });
+    reload();
+  };
   const state = status?.state ?? "disconnected";
   const warn = url && !isLocalUrl(url) && !isSecure(url);
 
@@ -39,6 +47,13 @@ export function ConnectionPanel({ status, tab, onTabToggle }: { status: Connecti
         </button>
         {tab?.enabled && <span className="pill">control on</span>}
       </div>
+      <div className="row" style={{ marginTop: 4 }}>
+        <label className="tiny" style={{ flex: "none" }}>Max agent steps / run</label>
+        <input type="number" min={1} max={100000} style={{ maxWidth: 90, flex: "none" }}
+          value={steps} disabled={unlimited} onChange={(e) => setSteps(Number(e.target.value))} />
+        <label className="check"><input type="checkbox" checked={unlimited} onChange={(e) => setUnlimited(e.target.checked)} />Unlimited</label>
+      </div>
+      <div className="muted tiny">How many tool-using turns the agent may take before stopping. Save to apply. {unlimited ? "Unlimited — use Stop to end a run." : ""}</div>
       <div className="row">
         <label style={{ fontSize: 12, display: "flex", gap: 5, alignItems: "center" }}>
           <input type="checkbox" style={{ flex: "none" }} checked={dbg} onChange={(e) => setDbg(e.target.checked)} />
