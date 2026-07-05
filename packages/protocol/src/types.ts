@@ -2,7 +2,7 @@ import type { z } from "zod";
 import type {
   helloSchema, helloAckSchema, commandSchema, responseSchema, eventSchema,
   restCommandSchema, chatRequestSchema, workflowRunSchema, capabilitySchema,
-  agentRunSchema, agentApproveSchema, agentModeSchema,
+  agentRunSchema, agentApproveSchema, agentModeSchema, sitePermissionSchema, scheduleSchema,
 } from "./schemas.js";
 
 export type Hello = z.infer<typeof helloSchema>;
@@ -17,13 +17,30 @@ export type Capability = z.infer<typeof capabilitySchema>;
 export type AgentRun = z.infer<typeof agentRunSchema>;
 export type AgentApprove = z.infer<typeof agentApproveSchema>;
 export type AgentMode = z.infer<typeof agentModeSchema>;
+export type SitePermission = z.infer<typeof sitePermissionSchema>;
+export type Schedule = z.infer<typeof scheduleSchema>;
 
 export interface AgentAction { name: string; args: Record<string, unknown> }
-export type AgentStep =
-  | { status: "done"; runId: string; answer: string; transcript: AgentTranscriptItem[] }
-  | { status: "awaiting_approval"; runId: string; assistantText: string; pendingActions: AgentAction[]; transcript: AgentTranscriptItem[] }
-  | { status: "error"; runId: string; error: { code: string; message: string } };
+export type AgentStatus = "running" | "awaiting_approval" | "done" | "error";
 export interface AgentTranscriptItem { tool: string; args: Record<string, unknown>; ok: boolean; resultSummary: string }
+
+/** Live events streamed from a background agent run (polled via /api/agent/events). */
+export type AgentEvent =
+  | { type: "assistant"; text: string }
+  | { type: "tool"; tool: string; args: Record<string, unknown>; ok: boolean; resultSummary: string }
+  | { type: "awaiting_approval"; assistantText: string; pendingActions: AgentAction[]; reason?: string }
+  | { type: "status"; note: string }
+  | { type: "done"; answer: string }
+  | { type: "error"; code: string; message: string };
+
+/** Snapshot returned by /api/agent/events?runId=&since= */
+export interface AgentEventsResponse {
+  runId: string;
+  status: AgentStatus;
+  cursor: number;         // pass back as `since` next poll
+  events: AgentEvent[];
+  transcript: AgentTranscriptItem[];
+}
 
 export interface SelectedElement {
   tag: string;

@@ -89,3 +89,24 @@ export const auditLogs = sqliteTable("audit_logs", {
   detailsJson: text("details_json"),
   createdAt: integer("created_at").notNull(),
 });
+
+export const sitePermissions = sqliteTable("site_permissions", {
+  domain: text("domain").primaryKey(),
+  mode: text("mode").notNull(), // always | blocked
+  updatedAt: integer("updated_at").notNull(),
+});
+
+export const schedules = sqliteTable("schedules", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  browserId: text("browser_id").notNull(),
+  tabId: integer("tab_id"),
+  prompt: text("prompt").notNull(),
+  mode: text("mode").notNull().default("auto"),
+  intervalMinutes: integer("interval_minutes").notNull(),
+  enabled: integer("enabled").notNull().default(1),
+  lastRunAt: integer("last_run_at"),
+  nextRunAt: integer("next_run_at").notNull(),
+  lastStatus: text("last_status"),
+  createdAt: integer("created_at").notNull(),
+});

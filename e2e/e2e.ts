@@ -10,7 +10,7 @@ const check = (name: string, cond: boolean, detail = "") => {
 
 const list = async () => (await (await fetch("http://127.0.0.1:9222/json/list")).json()) as any[];
 const api = async (path: string, init?: RequestInit) =>
-  (await fetch(`${API}${path}`, { headers: { "content-type": "application/json" }, ...init })).json() as Promise<any>;
+  (await fetch(`${API}${path}`, { ...init, headers: { ...(init?.body != null ? { "content-type": "application/json" } : {}), ...(init?.headers as any) } })).json() as Promise<any>;
 const cmd = (browserId: string, type: string, payload?: unknown, tabId?: number, timeoutMs?: number) =>
   api(`/api/browsers/${browserId}/commands`, { method: "POST", body: JSON.stringify({ type, target: tabId !== undefined ? { tabId } : {}, payload, timeoutMs }) });
 
@@ -50,6 +50,9 @@ const browsers = await api("/api/browsers");
 const me = browsers.find((b: any) => b.online);
 check("extension online in backend", Boolean(me), me?.id);
 const BID = me.id;
+
+// Clean slate: drop any leftover permission for the test host so reruns are idempotent.
+await api("/api/permissions/127.0.0.1", { method: "DELETE" }).catch(() => {});
 
 const opened = await cmd(BID, "tabs.open", { url: "http://127.0.0.1:8899/form.html", active: true });
 const TAB = opened.result.id as number;
@@ -92,36 +95,55 @@ const out = await cmd(BID, "page.extractText", {}, TAB);
 check("click ran page JS (greeting rendered, old value replaced)",
   out.ok && out.result.text.includes("Hello, World") && !out.result.text.includes("OLD VALUE"));
 
-// ---------- 4. scripted agent, autonomous: type → Enter(submit) → wait_for → screenshot ----------
-const run = await api("/api/agent/run", { method: "POST", body: JSON.stringify({ browserId: BID, tabId: TAB, prompt: "SCENARIO:search", mode: "auto" }) });
+// ---------- async agent helpers (poll the streamed event log to completion) ----------
+interface AgentResult { runId: string; status: string; answer: string; pendingActions: any[]; transcript: any[]; toolEvents: number; cursor: number }
+async function poll(runId: string, since = 0, seed?: Partial<AgentResult>): Promise<AgentResult> {
+  const r: AgentResult = { runId, status: "running", answer: "", pendingActions: [], transcript: [], toolEvents: 0, cursor: since, ...seed };
+  for (let i = 0; i < 240; i++) { // ~120s ceiling
+    const ev = await api(`/api/agent/events?runId=${runId}&since=${r.cursor}`);
+    r.cursor = ev.cursor; r.status = ev.status; r.transcript = ev.transcript ?? r.transcript;
+    for (const e of ev.events ?? []) {
+      if (e.type === "tool") r.toolEvents++;
+      if (e.type === "done") r.answer = e.answer;
+      if (e.type === "awaiting_approval") r.pendingActions = e.pendingActions ?? [];
+      if (e.type === "error") { r.answer = `${e.code}: ${e.message}`; }
+    }
+    if (ev.status !== "running") return r;
+    await Bun.sleep(400);
+  }
+  return r;
+}
+const startAgent = async (prompt: string, mode: string, tabId = TAB) =>
+  (await api("/api/agent/run", { method: "POST", body: JSON.stringify({ browserId: BID, tabId, prompt, mode }) })).runId as string;
+const runAgent = async (prompt: string, mode: string, tabId = TAB) => poll(await startAgent(prompt, mode, tabId));
+
+// ---------- 4. scripted agent, autonomous: type → Enter → wait_for → screenshot ----------
+const run = await runAgent("SCENARIO:search", "auto");
 check("agent run finished", run.status === "done", run.status);
 check("agent answer includes screenshot-image confirmation", String(run.answer).includes("image-seen:true"), run.answer);
-const tools = (run.transcript ?? []).map((t: any) => `${t.ok ? "+" : "-"}${t.tool}`).join(" ");
+const tools = run.transcript.map((t: any) => `${t.ok ? "+" : "-"}${t.tool}`).join(" ");
 console.log("   transcript:", tools);
-check("all agent tools succeeded", (run.transcript ?? []).every((t: any) => t.ok), tools);
+check("all agent tools succeeded", run.transcript.every((t: any) => t.ok), tools);
 const nav = await cmd(BID, "tabs.getActive");
 check("Enter really submitted the form (tab navigated to result page)",
   nav.ok && String(nav.result.url).includes("/result.html?q=hello+world"), nav.result?.url);
-
-// history/grounding: the scripted model saw the [Current page: …] prefix
 const lastReq = await (await fetch("http://127.0.0.1:9999/last")).json() as any;
-check("agent run was grounded with current page url", JSON.stringify(lastReq).includes("[Current page:"));
+check("agent run grounded with current page", JSON.stringify(lastReq).includes("[Current page"));
 
 // ---------- 5. read-only mode blocks actions server-side ----------
-const ro = await api("/api/agent/run", { method: "POST", body: JSON.stringify({ browserId: BID, tabId: TAB, prompt: "SCENARIO:readonly", mode: "read" }) });
-const blocked = (ro.transcript ?? []).find((t: any) => t.tool === "click");
-check("read-only: click blocked server-side", ro.status === "done" && blocked && !blocked.ok && blocked.resultSummary.includes("read-only"), blocked?.resultSummary);
+const ro = await runAgent("SCENARIO:readonly", "read");
+const roClick = ro.transcript.find((t: any) => t.tool === "click");
+check("read-only: click blocked server-side", ro.status === "done" && roClick && !roClick.ok && /read-only/i.test(roClick.resultSummary), roClick?.resultSummary);
 
 // ---------- 6. approve mode: pause → approve → executes ----------
-// go back to the form page first
 await cmd(BID, "tabs.navigate", { url: "http://127.0.0.1:8899/form.html" }, TAB);
 await Bun.sleep(1200);
-const ap = await api("/api/agent/run", { method: "POST", body: JSON.stringify({ browserId: BID, tabId: TAB, prompt: "SCENARIO:approve", mode: "approve" }) });
+const ap = await runAgent("SCENARIO:approve", "approve");
 check("approve mode pauses before acting", ap.status === "awaiting_approval", ap.status);
 check("pending action is the type", ap.pendingActions?.[0]?.name === "type");
-const approved = await api("/api/agent/approve", { method: "POST", body: JSON.stringify({ runId: ap.runId, approve: true }) });
+const approved = await poll(ap.runId, ap.cursor,
+  { ...(await api("/api/agent/approve", { method: "POST", body: JSON.stringify({ runId: ap.runId, approve: true }) })) });
 check("approved run completes", approved.status === "done" && approved.answer === "APPROVE DONE", approved.answer);
-// prove the approved type reached the DOM: the page's own Greet button echoes #q's value
 await cmd(BID, "page.click", { selector: "#greet" }, TAB);
 const g1 = await cmd(BID, "page.extractText", {}, TAB);
 check("approved type actually hit the field", g1.ok && g1.result.text.includes("Hello, approved text"));
@@ -129,14 +151,57 @@ check("approved type actually hit the field", g1.ok && g1.result.text.includes("
 // ---------- 7. approve mode: reject → nothing typed ----------
 await cmd(BID, "tabs.reload", {}, TAB);
 await Bun.sleep(1200);
-const ap2 = await api("/api/agent/run", { method: "POST", body: JSON.stringify({ browserId: BID, tabId: TAB, prompt: "SCENARIO:approve", mode: "approve" }) });
-const rejected = await api("/api/agent/approve", { method: "POST", body: JSON.stringify({ runId: ap2.runId, approve: false }) });
+const ap2 = await runAgent("SCENARIO:approve", "approve");
+await api("/api/agent/approve", { method: "POST", body: JSON.stringify({ runId: ap2.runId, approve: false }) });
+const rejected = await poll(ap2.runId, ap2.cursor);
 await cmd(BID, "page.click", { selector: "#greet" }, TAB);
 const g2 = await cmd(BID, "page.extractText", {}, TAB);
 check("rejected action never ran (field untouched)",
   rejected.status === "done" && g2.ok && g2.result.text.includes("Hello, OLD VALUE") && !g2.result.text.includes("approved text"));
-const rejTranscript = (rejected.transcript ?? []).find((t: any) => t.tool === "type");
-check("rejection recorded in transcript", rejTranscript?.resultSummary === "rejected by user");
+check("rejection recorded in transcript", rejected.transcript.find((t: any) => t.tool === "type")?.resultSummary === "rejected by user");
+
+// ---------- 8. live streaming + stop button ----------
+await cmd(BID, "tabs.reload", {}, TAB); await Bun.sleep(1000);
+const loopId = await startAgent("SCENARIO:loop", "auto");
+let cur = 0, streamed = 0;
+for (let i = 0; i < 3; i++) { await Bun.sleep(500); const ev = await api(`/api/agent/events?runId=${loopId}&since=${cur}`); cur = ev.cursor; streamed += (ev.events ?? []).filter((e: any) => e.type === "tool").length; }
+check("events stream incrementally while running", streamed >= 2, `${streamed} tool events observed mid-run`);
+await api("/api/agent/stop", { method: "POST", body: JSON.stringify({ runId: loopId }) });
+const stopped = await poll(loopId, cur);
+check("stop button ends the run", stopped.status === "done" && stopped.answer.includes("Stopped by user"), stopped.answer);
+
+// ---------- 9. sensitive-action floor: auto mode still pauses for a "Delete account" click ----------
+const sens = await runAgent("SCENARIO:sensitive", "auto");
+check("sensitive action forces approval even in autonomous mode", sens.status === "awaiting_approval", sens.status);
+check("pending sensitive action is the delete click", sens.pendingActions?.[0]?.args?.selector === "#danger");
+const sensDone = await poll(sens.runId, sens.cursor,
+  { ...(await api("/api/agent/approve", { method: "POST", body: JSON.stringify({ runId: sens.runId, approve: true }) })) });
+check("approved sensitive action completes", sensDone.status === "done" && sensDone.answer === "SENSITIVE DONE", sensDone.answer);
+
+// ---------- 10. per-site permission: blocked domain refuses actions ----------
+await api("/api/permissions", { method: "POST", body: JSON.stringify({ domain: "127.0.0.1", mode: "blocked" }) });
+const blk = await runAgent("SCENARIO:blocked", "auto");
+const blkClick = blk.transcript.find((t: any) => t.tool === "click");
+check("action on a blocked site is refused server-side", blk.status === "done" && blkClick && !blkClick.ok && blkClick.resultSummary.includes("Blocked"), blkClick?.resultSummary);
+const delRes = await api("/api/permissions/127.0.0.1", { method: "DELETE" }); // unblock for the next test
+const permList = await api("/api/permissions");
+check("permission cleared after delete", !(permList.configured ?? []).some((p: any) => p.domain === "127.0.0.1"), JSON.stringify(delRes));
+
+// ---------- 11. multi-tab: list_tabs + switch_tab ----------
+await cmd(BID, "tabs.open", { url: "http://127.0.0.1:8899/result.html?q=second", active: false });
+await Bun.sleep(800);
+const mt = await runAgent("SCENARIO:multitab", "auto");
+const switched = mt.transcript.find((t: any) => t.tool === "switch_tab");
+check("agent can switch between tabs", mt.status === "done" && switched?.ok && switched.resultSummary.includes("switched to tab"), switched?.resultSummary);
+
+// ---------- 12. scheduling + activity endpoints ----------
+const sched = await api("/api/schedules", { method: "POST", body: JSON.stringify({ name: "e2e", browserId: BID, prompt: "SCENARIO:readonly", mode: "read", intervalMinutes: 60 }) });
+check("schedule created", sched.ok && sched.schedule?.id, sched.schedule?.id);
+const schedules = await api("/api/schedules");
+check("schedule appears in list", schedules.some((s: any) => s.id === sched.schedule.id));
+await api(`/api/schedules/${sched.schedule.id}`, { method: "DELETE" });
+const activity = await api(`/api/activity?browserId=${BID}`);
+check("activity feed records agent runs", (activity.items ?? []).some((it: any) => it.action === "agent:run"));
 
 sw.close(); popup.close();
 console.log(failures === 0 ? "\nALL E2E CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);

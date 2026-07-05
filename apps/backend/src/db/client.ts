@@ -34,6 +34,12 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, context_json TEXT, created_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS audit_logs (
   id TEXT PRIMARY KEY, browser_id TEXT, action TEXT NOT NULL, details_json TEXT, created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS site_permissions (
+  domain TEXT PRIMARY KEY, mode TEXT NOT NULL, updated_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS schedules (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, browser_id TEXT NOT NULL, tab_id INTEGER, prompt TEXT NOT NULL,
+  mode TEXT NOT NULL DEFAULT 'auto', interval_minutes INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+  last_run_at INTEGER, next_run_at INTEGER NOT NULL, last_status TEXT, created_at INTEGER NOT NULL);
 `);
 
 export const db = drizzle(sqlite, { schema });

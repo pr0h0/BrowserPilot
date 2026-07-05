@@ -10,6 +10,17 @@ const tc = (name: string, args: Record<string, unknown>) => ({
 });
 const final = (text: string) => ({ choices: [{ message: { role: "assistant", content: text } }] });
 
+// Find the most recent list_tabs tool result and return its tabs array.
+function lastTabs(messages: any[]): any[] {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role === "tool" && typeof m.content === "string" && m.content.includes('"tabs"')) {
+      try { return JSON.parse(m.content).tabs ?? []; } catch { return []; }
+    }
+  }
+  return [];
+}
+
 Bun.serve({
   port: 9999,
   hostname: "127.0.0.1",
@@ -33,16 +44,36 @@ Bun.serve({
         }
       }
       if (userText.includes("SCENARIO:readonly")) {
-        switch (toolCount) {
-          case 0: return Response.json(tc("click", { selector: "#greet" }));
-          default: return Response.json(final("READONLY DONE"));
-        }
+        return toolCount === 0 ? Response.json(tc("click", { selector: "#greet" })) : Response.json(final("READONLY DONE"));
       }
       if (userText.includes("SCENARIO:approve")) {
+        return toolCount === 0 ? Response.json(tc("type", { selector: "#q", text: "approved text" })) : Response.json(final("APPROVE DONE"));
+      }
+      // Sensitive-action floor: even in auto mode, clicking "Delete account" must pause for approval.
+      if (userText.includes("SCENARIO:sensitive")) {
         switch (toolCount) {
-          case 0: return Response.json(tc("type", { selector: "#q", text: "approved text" }));
-          default: return Response.json(final("APPROVE DONE"));
+          case 0: return Response.json(tc("list_interactive", {})); // caches the "Delete account" label
+          case 1: return Response.json(tc("click", { selector: "#danger" }));
+          default: return Response.json(final("SENSITIVE DONE"));
         }
+      }
+      // Blocked site: the driver blocks 127.0.0.1 first; the click must be refused server-side.
+      if (userText.includes("SCENARIO:blocked")) {
+        return toolCount === 0 ? Response.json(tc("click", { selector: "#greet" })) : Response.json(final("BLOCKED DONE"));
+      }
+      // Stop: loop on a read tool (with a server delay) so the driver can stop mid-run.
+      if (userText.includes("SCENARIO:loop")) {
+        await Bun.sleep(400);
+        return Response.json(tc("list_interactive", {}));
+      }
+      // Multi-tab: list tabs, switch to the result-page tab, done.
+      if (userText.includes("SCENARIO:multitab")) {
+        if (toolCount === 0) return Response.json(tc("list_tabs", {}));
+        if (toolCount === 1) {
+          const target = lastTabs(body.messages).find((t: any) => String(t.url).includes("result.html"));
+          return Response.json(tc("switch_tab", { tabId: target?.id ?? -1 }));
+        }
+        return Response.json(final("MULTITAB DONE"));
       }
       return Response.json(final("no scenario"));
     }

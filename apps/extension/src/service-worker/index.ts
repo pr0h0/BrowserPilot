@@ -36,6 +36,22 @@ chrome.runtime.onStartup?.addListener(() => socket.connect());
 // action also able to open the side panel if the user prefers.
 chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel?.setPanelBehavior?.({ openPanelOnActionClick: false }).catch(() => {});
+  chrome.contextMenus?.create({ id: "bp-ask-selection", title: 'Ask BrowserPilot about "%s"', contexts: ["selection"] }, () => void chrome.runtime.lastError);
+});
+
+// Right-click a selection → open the panel with the text prefilled into chat.
+chrome.contextMenus?.onClicked.addListener(async (info, tab) => {
+  if (info.menuItemId !== "bp-ask-selection" || !info.selectionText) return;
+  await chrome.storage.session?.set({ "browserpilot:prefill": info.selectionText.slice(0, 2000) });
+  if (tab?.windowId != null) { try { await chrome.sidePanel.open({ windowId: tab.windowId }); } catch {} }
+  chrome.runtime.sendMessage({ kind: "chatPrefill", text: info.selectionText.slice(0, 2000) }).catch(() => {});
+});
+
+// Keyboard shortcut (default Ctrl/Cmd+Shift+U) → open the side panel.
+chrome.commands?.onCommand.addListener(async (command) => {
+  if (command !== "open-side-panel") return;
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (tab?.windowId != null) { try { await chrome.sidePanel.open({ windowId: tab.windowId }); } catch {} }
 });
 
 chrome.runtime.onMessage.addListener((msg: any, sender, sendResponse) => {
@@ -62,6 +78,12 @@ async function handleUi(req: UiRequest): Promise<UiResponse> {
   switch (req?.kind) {
     case "getStatus": return { ok: true, data: lastStatus ?? socket.status() };
     case "getSettings": return { ok: true, data: await getSettings() };
+    case "getPrefill": {
+      const key = "browserpilot:prefill";
+      const v = (await chrome.storage.session?.get(key))?.[key] as string | undefined;
+      if (v) await chrome.storage.session?.remove(key);
+      return { ok: true, data: v ?? null };
+    }
     case "connect": await socket.connect(); return { ok: true, data: socket.status() };
     case "disconnect": socket.disconnect(); return { ok: true, data: socket.status() };
     case "saveSettings": {

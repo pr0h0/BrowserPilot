@@ -14,7 +14,7 @@ export function sendToSw(req: UiRequest): Promise<UiResponse> {
 export function onSwBroadcast(handler: (msg: SwBroadcast) => void): () => void {
   const listener = (msg: unknown) => {
     if (msg && typeof msg === "object" && "kind" in (msg as any) &&
-        ["status", "elementSelected", "console"].includes((msg as any).kind)) {
+        ["status", "elementSelected", "console", "chatPrefill"].includes((msg as any).kind)) {
       handler(msg as SwBroadcast);
     }
   };

@@ -5,30 +5,71 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>BrowserPilot</title>
     <style>
-      :root { color-scheme: light dark; }
-      body { margin: 0; font: 13px/1.45 system-ui, sans-serif; }
-      #root { padding: 12px; }
-      h1 { font-size: 15px; margin: 0 0 10px; }
-      section { border: 1px solid #8883; border-radius: 8px; padding: 10px; margin-bottom: 10px; }
-      section > h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; opacity: .7; margin: 0 0 8px; }
+      :root {
+        color-scheme: light dark;
+        --accent: #2b8cff; --good: #2ecc71; --bad: #e74c3c; --warn: #e67e22;
+        --line: color-mix(in srgb, currentColor 14%, transparent);
+        --panel: color-mix(in srgb, currentColor 4%, transparent);
+        --soft: color-mix(in srgb, currentColor 7%, transparent);
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; font: 13px/1.45 system-ui, -apple-system, sans-serif; }
+      .app { display: flex; flex-direction: column; height: 100vh; }
+
+      .topbar { display: flex; justify-content: space-between; align-items: center; padding: 9px 12px; border-bottom: 1px solid var(--line);
+        position: sticky; top: 0; background: Canvas; z-index: 5; }
+      .topbar strong { font-size: 14px; }
+
+      .tabs { display: flex; gap: 1px; padding: 4px 6px; border-bottom: 1px solid var(--line); overflow-x: auto; background: Canvas;
+        position: sticky; top: 39px; z-index: 4; }
+      .tab { display: flex; align-items: center; gap: 5px; background: transparent; color: inherit; border: none; border-radius: 7px;
+        padding: 5px 9px; opacity: .6; white-space: nowrap; font-size: 12px; cursor: pointer; }
+      .tab .tablabel { display: none; }
+      .tab.active .tablabel { display: inline; }
+      .tab .tabicon { font-size: 14px; }
+      .tab:hover { opacity: .9; background: var(--soft); }
+      .tab.active { opacity: 1; background: color-mix(in srgb, var(--accent) 16%, transparent); font-weight: 600; }
+      .badge { min-width: 15px; text-align: center; font-size: 10px; padding: 0 4px; border-radius: 9px; background: var(--accent); color: #fff; }
+
+      .body { flex: 1; overflow-y: auto; padding: 10px; }
+      .body section { border: 1px solid var(--line); border-radius: 10px; padding: 11px; margin-bottom: 10px; }
+      section > h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; opacity: .6; margin: 0 0 8px; }
+
       .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 5px 0; }
-      input, textarea, select { padding: 5px 6px; border: 1px solid #8884; border-radius: 5px; background: transparent; color: inherit; font: inherit; }
-      textarea { width: 100%; box-sizing: border-box; resize: vertical; }
+      .row.between { justify-content: space-between; }
+      input, textarea, select { padding: 5px 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: inherit; font: inherit; }
+      textarea { width: 100%; resize: vertical; }
       input { flex: 1; min-width: 80px; }
-      button { padding: 4px 9px; border: 1px solid #8886; border-radius: 6px; background: #2b8cff; color: #fff; cursor: pointer; font-size: 12px; }
-      button.ghost { background: transparent; color: inherit; }
-      button:disabled { opacity: .5; cursor: default; }
+      input[type=checkbox] { flex: none; min-width: 0; }
+      button { padding: 5px 10px; border: 1px solid transparent; border-radius: 7px; background: var(--accent); color: #fff; cursor: pointer; font-size: 12px; }
+      button.ghost { background: var(--soft); color: inherit; border-color: var(--line); }
+      button.ghost:hover { background: var(--line); }
+      button.sm { padding: 3px 7px; font-size: 11px; }
+      button.danger { color: var(--bad); }
+      button:disabled { opacity: .45; cursor: default; }
+
       .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
-      .muted { opacity: .65; font-size: 12px; }
+      .muted { opacity: .62; }
+      .tiny { font-size: 11px; }
+      .prewrap { white-space: pre-wrap; }
+      .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
+      .ellipsis2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
       code, pre { font-size: 11px; word-break: break-all; white-space: pre-wrap; }
-      pre { background: #8881; padding: 8px; border-radius: 6px; max-height: 220px; overflow: auto; }
-      .err { color: #e74c3c; }
-      .pill { font-size: 10px; padding: 1px 6px; border-radius: 10px; background: #8882; }
-      .tabs { display: flex; gap: 2px; border-bottom: 1px solid #8883; margin-bottom: 10px; overflow-x: auto; }
-      .tab { background: transparent; color: inherit; border: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 6px 10px; opacity: .65; white-space: nowrap; }
-      .tab:hover { opacity: .9; }
-      .tab.active { opacity: 1; border-bottom-color: #2b8cff; font-weight: 600; }
-      .badge { display: inline-block; min-width: 14px; text-align: center; margin-left: 5px; font-size: 10px; padding: 0 4px; border-radius: 9px; background: #2b8cff; color: #fff; }
+      pre { background: var(--soft); padding: 8px; border-radius: 7px; max-height: 220px; overflow: auto; }
+      .err { color: var(--bad); }
+      .check { font-size: 11px; display: flex; gap: 4px; align-items: center; }
+
+      .pill { font-size: 10px; padding: 1px 7px; border-radius: 10px; background: var(--soft); border: 1px solid var(--line); }
+      .pill.good { color: var(--good); border-color: color-mix(in srgb, var(--good) 40%, transparent); }
+      .pill.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, transparent); }
+
+      .card { border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; margin: 7px 0; background: var(--panel); }
+      .card.live { border-color: color-mix(in srgb, var(--warn) 55%, transparent); background: color-mix(in srgb, var(--warn) 9%, transparent); }
+      .msg.user { border-left: 3px solid var(--accent); }
+      .msg.assistant { border-left: 3px solid var(--good); }
+      .chatlog { margin: 8px 0; }
+      .list { margin-top: 6px; }
+      .listrow { padding: 4px 2px; border-top: 1px solid var(--line); }
     </style>
   </head>
   <body>

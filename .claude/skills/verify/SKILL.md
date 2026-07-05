@@ -21,9 +21,12 @@ on a live form, console capture (main-world hook), screenshots, and the agent lo
 # https://googlechromelabs.github.io/chrome-for-testing/  → linux64 chrome zip
 CHROME_BIN=/path/to/chrome-linux64/chrome ./e2e/run.sh
 ```
-Expect `ALL E2E CHECKS PASSED` (23 checks). Pieces: `test-pages.ts` (:8899 form/result pages),
-`scripted-ai.ts` (:9999 fake OpenAI endpoint emitting fixed tool calls per SCENARIO:* prompt),
-`e2e.ts` (driver: REST + CDP on :9222).
+Expect `ALL E2E CHECKS PASSED` (34 checks): tab gate, live click/type, console capture,
+screenshots, agent auto/read-only/approve/reject, live streaming + Stop, sensitive-action floor,
+per-site block, multi-tab switch, schedules + activity. Pieces: `test-pages.ts` (:8899 form/result
+pages), `scripted-ai.ts` (:9999 fake OpenAI endpoint; fixed tool calls per SCENARIO:* prompt),
+`e2e.ts` (driver: REST + CDP on :9222). The driver clears the `127.0.0.1` site permission at
+startup so reruns are idempotent — the DB persists between runs.
 
 ## Gotchas learned the hard way
 - Start long-lived processes with `setsid nohup ... < /dev/null &` — otherwise later shell

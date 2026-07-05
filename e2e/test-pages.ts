@@ -12,6 +12,7 @@ Bun.serve({
   <button type="submit">Search</button>
 </form>
 <button id="greet" onclick="document.getElementById('out').textContent='Hello, '+document.getElementById('q').value">Greet</button>
+<button id="danger" onclick="document.getElementById('out').textContent='DELETED'">Delete account</button>
 <div id="out"></div>
 <a href="/result.html?q=link">go</a>
 <script>console.error("boom from form page");<\/script>`, { headers: { "content-type": "text/html" } });

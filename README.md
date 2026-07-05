@@ -38,8 +38,19 @@ AI ───┘                        (commands + responses + events)
   raw-JS execution path.
 - **Per-tab control**: page extraction/actions are refused unless you enabled control
   for that tab (`TAB_NOT_ENABLED`). Safe tab management + capture are always allowed.
+- **Per-site permissions** (agent): each domain is `ask` (default — approve each action),
+  `always` (act without asking), or `blocked` (never act). Banking/auth hosts are blocked
+  out of the box; extend with `BLOCKED_SITES`. Managed in the side panel's Settings → Site
+  permissions, or `POST /api/permissions`.
+- **Sensitive-action floor**: purchases, payments, deleting/publishing/sharing always
+  require explicit approval — even in Autonomous mode. In scheduled runs (no human) they
+  are refused outright.
+- **Prompt-injection defense**: page-derived text/DOM is fenced in `<untrusted_page_content>`
+  and the model is told to treat it as data, never instructions; a heuristic flags common
+  injection signatures inline.
 - **Redaction**: sensitive headers/fields (`authorization`, `cookie`, `token`,
-  `password`, `api_key`, …) are replaced with `[REDACTED]` in logs, DB, and AI context.
+  `password`, `api_key`, …) are replaced with `[REDACTED]` in logs, DB, and AI context,
+  including secret-shaped substrings inside free text.
 - Password fields are never typed into or exported; HTML extraction redacts password /
   token / secret inputs.
 - The extension status is always visible; an emergency **Disconnect** button is in both
@@ -195,13 +206,20 @@ Set in `.env`. Four providers are supported:
 
 The **Chat** tab is an agent: it can *act* on the page, not just describe it. Its tools:
 read — `list_interactive`, `extract_text`, `get_console`, `get_selected_element`, `wait_for`,
-`scroll`, `screenshot` (the model *sees* the captured image, vision models only);
-act — `click`, `type`, `press_key`, `navigate`. To click "the red Buy button", it calls
-`list_interactive` (which returns each element's selector **and rendered color/text**), matches
-your description, then calls `click` with the exact selector — no coordinate guessing.
-Multi-step tasks work: it can navigate, `wait_for` the new page, re-list, and continue.
-Each run is grounded with the current tab's URL/title, and the panel sends recent chat
-history so follow-up questions keep their context.
+`scroll`, `screenshot` (the model *sees* the captured image, vision models only), `list_tabs`;
+act — `click`, `type`, `press_key`, `navigate`, `switch_tab`. To click "the red Buy button", it
+calls `list_interactive` (which returns each element's selector **and rendered color/text**),
+matches your description, then calls `click` with the exact selector — no coordinate guessing.
+Multi-step and **multi-tab** tasks work: it can `list_tabs`, `switch_tab`, navigate, `wait_for`
+the new page, re-list, and continue. Each run is grounded with the current page, and the panel
+sends recent chat history so follow-ups keep context.
+
+Runs are **asynchronous and streamed**: `POST /api/agent/run` returns a `runId` immediately,
+the panel polls `GET /api/agent/events?runId=&since=` to show each tool call live, and a **Stop**
+button (`POST /api/agent/stop`) ends a run mid-flight.
+
+Right-click selected text → **Ask BrowserPilot about "…"** opens the panel with it prefilled.
+Keyboard shortcut **Ctrl/⌘+Shift+U** opens the side panel.
 
 **Autonomy** is a dropdown in the Chat tab:
 
@@ -212,8 +230,15 @@ history so follow-up questions keep their context.
 | **Autonomous** | Acts on its own — but only on tabs where you enabled control. |
 
 Hard floor in every mode: the AI can only act on a tab you've **enabled control** for (the same
-`TAB_NOT_ENABLED` gate the CLI hits). Tick **Screenshot** to also give the model visual context
-(needs a vision model). REST: `POST /api/agent/run` then `POST /api/agent/approve`.
+`TAB_NOT_ENABLED` gate the CLI hits), only on sites that aren't `blocked`, and sensitive actions
+always ask. Tick **Screenshot** to give the model visual context (needs a vision model).
+
+## 11c. Scheduled tasks
+
+Settings → Scheduled tasks (or `POST /api/schedules`) runs a prompt on a repeating interval.
+Scheduled runs act autonomously but **refuse** sensitive actions (no one is there to approve) and
+respect the site blocklist. The **Activity** tab (`GET /api/activity`) shows a live feed of agent
+runs, approvals, permission changes, and scheduled runs.
 
 ## 12. Troubleshooting
 

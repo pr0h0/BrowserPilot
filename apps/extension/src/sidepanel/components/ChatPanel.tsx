@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
-import { httpBaseFromWs, pageKey } from "../../shared/hooks.js";
-import type { AgentMode, AgentStep, AgentAction, AgentTranscriptItem } from "@browserpilot/protocol";
+import { pageKey } from "../../shared/hooks.js";
+import { makeApi } from "../../shared/api.js";
+import type { AgentMode, AgentAction, AgentTranscriptItem, AgentEvent, AgentEventsResponse } from "@browserpilot/protocol";
 
 interface Msg { role: "user" | "assistant"; content: string; actions?: AgentTranscriptItem[] }
 type Chats = Record<string, Msg[]>;
@@ -8,23 +9,25 @@ const STORE = "browserpilot:chats";
 const MODE_STORE = "browserpilot:agentMode";
 
 const MODES: Array<[AgentMode, string, string]> = [
-  ["read", "Read-only", "AI can read the page/console but never clicks or types."],
-  ["approve", "Approve actions", "AI proposes each click/type; you approve before it runs."],
-  ["auto", "Autonomous", "AI clicks and types on its own (only on tabs where control is enabled)."],
+  ["read", "Read-only", "Reads the page/console but never clicks or types."],
+  ["approve", "Approve actions", "Proposes each action; you approve before it runs (auto-runs on trusted sites)."],
+  ["auto", "Autonomous", "Acts on its own — sensitive actions still ask; blocked sites are refused."],
 ];
 
-interface Pending { runId: string; assistantText: string; actions: AgentAction[]; transcript: AgentTranscriptItem[] }
+interface Live { runId: string; steps: AgentTranscriptItem[]; assistantText: string;
+  pending?: { actions: AgentAction[] }; status: string }
 
-export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefill }: { backendUrl?: string; browserId?: string; tabId?: number; pageUrl?: string; token?: string; prefill?: string }) {
+export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefill }:
+  { backendUrl?: string; browserId?: string; tabId?: number; pageUrl?: string; token?: string; prefill?: string }) {
   const key = pageKey(pageUrl);
   const [chats, setChats] = useState<Chats>({});
   const [prompt, setPrompt] = useState("");
   const [mode, setMode] = useState<AgentMode>("approve");
   const [attachShot, setAttachShot] = useState(false);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [pending, setPending] = useState<Pending | null>(null);
+  const [live, setLive] = useState<Live | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const api = makeApi(backendUrl, token);
 
   const history = chats[key] ?? [];
   let pageLabel = "no page";
@@ -33,93 +36,99 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefil
   useEffect(() => {
     chrome.storage.local.get([STORE, MODE_STORE]).then((r) => { setChats((r[STORE] as Chats) ?? {}); if (r[MODE_STORE]) setMode(r[MODE_STORE] as AgentMode); });
   }, []);
-  useEffect(() => { endRef.current?.scrollIntoView({ block: "end" }); }, [history.length, key, pending, busy]);
-  useEffect(() => { setPending(null); }, [key]); // drop a stale approval when switching page
-  useEffect(() => { if (prefill) setPrompt(prefill); }, [prefill]); // "Send to AI" from the element panel
+  useEffect(() => { endRef.current?.scrollIntoView({ block: "end" }); }, [history.length, key, live]);
+  useEffect(() => { setLive(null); }, [key]);
+  useEffect(() => { if (prefill) setPrompt(prefill); }, [prefill]);
 
   const persist = (next: Chats) => { setChats(next); chrome.storage.local.set({ [STORE]: next }); };
   const append = (msgs: Msg[], extra: Msg[]) => persist({ ...chats, [key]: [...msgs, ...extra] });
-  const newChat = () => { persist({ ...chats, [key]: [] }); setPending(null); };
+  const newChat = () => { persist({ ...chats, [key]: [] }); setLive(null); };
   const changeMode = (m: AgentMode) => { setMode(m); chrome.storage.local.set({ [MODE_STORE]: m }); };
 
-  const base = () => httpBaseFromWs(backendUrl!);
-  const headers = (): Record<string, string> => ({ "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) });
-
-  // Apply a backend AgentStep: either finish (push assistant msg) or surface an approval card.
-  const applyStep = (step: AgentStep, priorHistory: Msg[]) => {
-    if (step.status === "awaiting_approval") {
-      setPending({ runId: step.runId, assistantText: step.assistantText, actions: step.pendingActions, transcript: step.transcript });
-    } else if (step.status === "done") {
-      append(priorHistory, [{ role: "assistant", content: step.answer, actions: step.transcript }]);
-      setPending(null);
-    } else {
-      append(priorHistory, [{ role: "assistant", content: `⚠ ${step.error.code}: ${step.error.message}`, actions: [] }]);
-      setPending(null);
+  // Poll the backend event stream for a run until it finishes / needs approval.
+  const pollRun = async (runId: string, priorHistory: Msg[]) => {
+    let since = 0;
+    let cur: Live = { runId, steps: [], assistantText: "", status: "running" };
+    setLive(cur);
+    while (true) {
+      let ev: AgentEventsResponse;
+      try { ev = await api.get(`/api/agent/events?runId=${runId}&since=${since}`); }
+      catch (e) { append(priorHistory, [{ role: "assistant", content: `⚠ ${String(e)}` }]); setLive(null); return; }
+      since = ev.cursor;
+      for (const e of ev.events as AgentEvent[]) {
+        if (e.type === "tool") cur = { ...cur, steps: [...cur.steps, { tool: e.tool, args: e.args, ok: e.ok, resultSummary: e.resultSummary }] };
+        else if (e.type === "assistant" && e.text) cur = { ...cur, assistantText: e.text };
+        else if (e.type === "awaiting_approval") cur = { ...cur, assistantText: e.assistantText || cur.assistantText, pending: { actions: e.pendingActions } };
+        else if (e.type === "done") { append(priorHistory, [{ role: "assistant", content: e.answer, actions: cur.steps }]); setLive(null); return; }
+        else if (e.type === "error") { append(priorHistory, [{ role: "assistant", content: `⚠ ${e.code}: ${e.message}`, actions: cur.steps }]); setLive(null); return; }
+      }
+      cur = { ...cur, status: ev.status };
+      setLive({ ...cur });
+      if (ev.status === "awaiting_approval") return; // wait for the user
+      await new Promise((r) => setTimeout(r, 500));
     }
   };
 
   const ask = async () => {
-    if (!prompt.trim() || !browserId || !backendUrl) { setError("Need a prompt and a connected browser."); return; }
-    setError(""); setBusy(true); setPending(null);
+    if (!prompt.trim() || !browserId || !api.ok) { setError("Need a prompt and a connected browser."); return; }
+    setError("");
     const withUser = [...history, { role: "user" as const, content: prompt }];
     persist({ ...chats, [key]: withUser }); setPrompt("");
     try {
-      const res = await fetch(`${base()}/api/agent/run`, {
-        method: "POST", headers: headers(),
-        body: JSON.stringify({
-          browserId, tabId, prompt, mode, attachScreenshot: attachShot,
-          history: history.slice(-12).map((m) => ({ role: m.role, content: m.content })),
-        }),
-      });
-      applyStep(await res.json() as AgentStep, withUser);
+      const res = await api.post("/api/agent/run", { browserId, tabId, prompt, mode, attachScreenshot: attachShot,
+        history: history.slice(-12).map((m) => ({ role: m.role, content: m.content })) });
+      await pollRun(res.runId, withUser);
     } catch (e) { append(withUser, [{ role: "assistant", content: `⚠ ${String(e)}` }]); }
-    setBusy(false);
   };
 
   const resolve = async (approve: boolean) => {
-    if (!pending) return;
-    setBusy(true);
-    const p = pending; setPending(null);
-    try {
-      const res = await fetch(`${base()}/api/agent/approve`, {
-        method: "POST", headers: headers(),
-        body: JSON.stringify({ runId: p.runId, approve }),
-      });
-      applyStep(await res.json() as AgentStep, history);
-    } catch (e) { append(history, [{ role: "assistant", content: `⚠ ${String(e)}` }]); }
-    setBusy(false);
+    if (!live) return;
+    try { await api.post("/api/agent/approve", { runId: live.runId, approve }); await pollRun(live.runId, history); }
+    catch (e) { append(history, [{ role: "assistant", content: `⚠ ${String(e)}` }]); setLive(null); }
   };
 
+  const stop = async () => { if (live) { try { await api.post("/api/agent/stop", { runId: live.runId }); } catch {} } };
+
+  const busy = live !== null && live.status === "running";
+
   return (
-    <section>
-      <div className="row" style={{ justifyContent: "space-between" }}>
-        <span className="muted" title={pageUrl} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>💬 {pageLabel}</span>
-        <button className="ghost" onClick={newChat} disabled={!history.length && !pending}>New chat</button>
+    <section className="pad">
+      <div className="row between">
+        <span className="muted ellipsis" title={pageUrl}>💬 {pageLabel}</span>
+        <button className="ghost sm" onClick={newChat} disabled={!history.length && !live}>New chat</button>
       </div>
 
-      <div className="row" style={{ gap: 5 }}>
+      <div className="row" style={{ gap: 6 }}>
         <select value={mode} onChange={(e) => changeMode(e.target.value as AgentMode)} title={MODES.find((m) => m[0] === mode)?.[2]}>
           {MODES.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
         </select>
-        <label style={{ fontSize: 11, display: "flex", gap: 3, alignItems: "center" }}>
-          <input type="checkbox" style={{ flex: "none" }} checked={attachShot} onChange={(e) => setAttachShot(e.target.checked)} />Screenshot
-        </label>
+        <label className="check"><input type="checkbox" checked={attachShot} onChange={(e) => setAttachShot(e.target.checked)} />Screenshot</label>
       </div>
-      <div className="muted" style={{ fontSize: 11 }}>{MODES.find((m) => m[0] === mode)?.[2]}</div>
+      <div className="muted tiny">{MODES.find((m) => m[0] === mode)?.[2]}</div>
 
-      <div style={{ margin: "8px 0" }}>
-        {history.length === 0 && !pending && <div className="muted">Ask me to read or act on this page. Each page keeps its own conversation.</div>}
+      <div className="chatlog">
+        {history.length === 0 && !live && <div className="muted">Ask me to read or act on this page. Each page keeps its own conversation.</div>}
         {history.map((m, i) => <MessageBox key={i} msg={m} />)}
 
-        {pending && (
-          <div style={{ border: "1px solid #e67e2288", borderLeft: "3px solid #e67e22", borderRadius: 8, padding: "8px 10px", margin: "7px 0", background: "#e67e2214" }}>
-            <div className="pill" style={{ marginBottom: 4 }}>approval needed</div>
-            {pending.assistantText && <div style={{ whiteSpace: "pre-wrap", marginBottom: 6 }}>{pending.assistantText}</div>}
-            {pending.actions.map((a, i) => <div key={i}><code>{describeAction(a)}</code></div>)}
-            <div className="row" style={{ marginTop: 6 }}>
-              <button onClick={() => resolve(true)} disabled={busy}>Approve</button>
-              <button className="ghost" onClick={() => resolve(false)} disabled={busy}>Reject</button>
+        {live && (
+          <div className="card live">
+            <div className="row between">
+              <span className="pill">{live.pending ? "approval needed" : busy ? "working…" : live.status}</span>
+              {busy && <button className="ghost sm danger" onClick={stop}>Stop</button>}
             </div>
+            {live.steps.map((t, i) => (
+              <div key={i} className="muted tiny">{t.ok ? "✓" : "✗"} {t.tool}{t.resultSummary ? ` — ${t.resultSummary}` : ""}</div>
+            ))}
+            {live.assistantText && <div className="prewrap" style={{ marginTop: 4 }}>{live.assistantText}</div>}
+            {live.pending && (
+              <div style={{ marginTop: 6 }}>
+                {live.pending.actions.map((a, i) => <div key={i}><code>{describeAction(a)}</code></div>)}
+                <div className="row" style={{ marginTop: 6 }}>
+                  <button onClick={() => resolve(true)}>Approve</button>
+                  <button className="ghost" onClick={() => resolve(false)}>Reject</button>
+                </div>
+              </div>
+            )}
           </div>
         )}
         <div ref={endRef} />
@@ -137,19 +146,14 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefil
 function MessageBox({ msg }: { msg: Msg }) {
   const isUser = msg.role === "user";
   return (
-    <div style={{
-      border: `1px solid ${isUser ? "#2b8cff66" : "#8884"}`, borderLeft: `3px solid ${isUser ? "#2b8cff" : "#2ecc71"}`,
-      borderRadius: 8, padding: "6px 9px", margin: "7px 0", background: isUser ? "#2b8cff14" : "#8881",
-    }}>
-      <div className="pill" style={{ marginBottom: 4 }}>{isUser ? "you" : "assistant"}</div>
+    <div className={`card msg ${isUser ? "user" : "assistant"}`}>
+      <div className="pill">{isUser ? "you" : "assistant"}</div>
       {msg.actions && msg.actions.length > 0 && (
-        <div style={{ marginBottom: 6 }}>
-          {msg.actions.map((t, i) => (
-            <div key={i} className="muted" style={{ fontSize: 11 }}>{t.ok ? "✓" : "✗"} {t.tool}{t.resultSummary ? ` — ${t.resultSummary}` : ""}</div>
-          ))}
+        <div style={{ margin: "4px 0" }}>
+          {msg.actions.map((t, i) => <div key={i} className="muted tiny">{t.ok ? "✓" : "✗"} {t.tool}{t.resultSummary ? ` — ${t.resultSummary}` : ""}</div>)}
         </div>
       )}
-      <div style={{ whiteSpace: "pre-wrap" }}>{msg.content}</div>
+      <div className="prewrap">{msg.content}</div>
     </div>
   );
 }
@@ -157,4 +161,5 @@ function MessageBox({ msg }: { msg: Msg }) {
 const describeAction = (a: AgentAction) =>
   a.name === "click" ? `🖱 click ${a.args.selector}`
   : a.name === "type" ? `⌨ type "${String(a.args.text ?? "")}" into ${a.args.selector}`
+  : a.name === "navigate" ? `🧭 navigate ${a.args.url}`
   : `${a.name} ${JSON.stringify(a.args)}`;

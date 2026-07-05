@@ -16,6 +16,8 @@ export const config = {
   databaseUrl: fromBackendRoot((env.DATABASE_URL ?? "file:./data/browserpilot.sqlite").replace(/^file:/, "")),
   pairingToken: env.PAIRING_TOKEN ?? "",
   screenshotDir: fromBackendRoot(env.SCREENSHOT_DIR ?? "./data/screenshots"),
+  // Extra domains the agent may never act on, comma-separated (added to DEFAULT_BLOCKED_SITES).
+  blockedSites: (env.BLOCKED_SITES ?? "").split(",").map((s) => s.trim()).filter(Boolean),
   ai: {
     // provider: openai | deepseek | openrouter | anthropic. openai/deepseek/openrouter
     // all speak the OpenAI chat-completions API; anthropic uses its native messages API.

@@ -8,6 +8,9 @@ import { chatRoutes } from "./api/chat.js";
 import { agentRoutes } from "./api/agent.js";
 import { logsRoutes } from "./api/logs.js";
 import { workflowsRoutes } from "./api/workflows.js";
+import { permissionsRoutes } from "./api/permissions.js";
+import { schedulesRoutes } from "./api/schedules.js";
+import { activityRoutes } from "./api/activity.js";
 import { isAiConfigured } from "./services/aiService.js";
 import { tokenOk, tokenFromHeaders } from "./util/auth.js";
 
@@ -42,6 +45,9 @@ export async function buildApp() {
   await app.register(agentRoutes);
   await app.register(logsRoutes);
   await app.register(workflowsRoutes);
+  await app.register(permissionsRoutes);
+  await app.register(schedulesRoutes);
+  await app.register(activityRoutes);
 
   return app;
 }

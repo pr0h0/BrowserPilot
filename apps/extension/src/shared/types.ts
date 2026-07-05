@@ -29,6 +29,7 @@ export type UiRequest =
   | { kind: "getSettings" }
   | { kind: "setTabEnabled"; tabId: number; enabled: boolean }
   | { kind: "getActiveTab" }
+  | { kind: "getPrefill" }
   | { kind: "runCommand"; commandType: string; tabId?: number; payload?: unknown }
   | { kind: "getRecentConsole"; tabId?: number }
   | { kind: "getSelectedElement"; tabId?: number };
@@ -39,6 +40,7 @@ export type UiResponse = { ok: true; data?: unknown } | { ok: false; error: stri
 export type SwBroadcast =
   | { kind: "status"; status: ConnectionStatus }
   | { kind: "elementSelected"; element: SelectedElement; tabId: number }
-  | { kind: "console"; event: ConsoleEvent };
+  | { kind: "console"; event: ConsoleEvent }
+  | { kind: "chatPrefill"; text: string };
 
 export type { SelectedElement, ConsoleEvent };

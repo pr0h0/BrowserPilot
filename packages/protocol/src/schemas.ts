@@ -121,6 +121,26 @@ export const agentApproveSchema = z.object({
   approve: z.boolean(),
 });
 
+export const agentStopSchema = z.object({ runId: z.string() });
+
+// Per-site permission: "always" = act without asking, "blocked" = never act. Absent = ask (default).
+export const sitePermissionSchema = z.object({
+  domain: z.string().min(1).max(255),
+  mode: z.enum(["always", "blocked"]),
+});
+
+export const scheduleSchema = z.object({
+  name: z.string().min(1).max(120),
+  browserId: z.string(),
+  tabId: z.number().optional(),
+  prompt: z.string().min(1).max(4000),
+  // Scheduled agent runs never pause for approval; they run autonomously but refuse sensitive
+  // actions outright (no human to approve). Mode here selects read vs. act.
+  mode: z.enum(["read", "auto"]).default("auto"),
+  intervalMinutes: z.number().int().min(1).max(10_080), // 1 min .. 1 week
+  enabled: z.boolean().default(true),
+});
+
 export const workflowRunSchema = z.object({
   browserId: z.string(),
   name: z.string(),
