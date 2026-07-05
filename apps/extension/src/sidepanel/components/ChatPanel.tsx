@@ -1,12 +1,27 @@
 import { useState, useEffect, useRef } from "react";
-import { pageKey } from "../../shared/hooks.js";
 import { makeApi } from "../../shared/api.js";
 import type { AgentMode, AgentAction, AgentTranscriptItem, AgentEvent, AgentEventsResponse } from "@browserpilot/protocol";
 
 interface Msg { role: "user" | "assistant"; content: string; actions?: AgentTranscriptItem[] }
-type Chats = Record<string, Msg[]>;
-const STORE = "browserpilot:chats";
+interface Session { id: string; title: string; createdAt: number; updatedAt: number; messages: Msg[] }
+type Sessions = Record<string, Session>;
+
+const SESS = "browserpilot:sessions";
+const CUR = "browserpilot:currentSession";
+const OLD = "browserpilot:chats"; // legacy page-keyed chats, migrated once
 const MODE_STORE = "browserpilot:agentMode";
+const NEW_TITLE = "New chat";
+
+const newId = () => `s_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+const blankSession = (): Session => ({ id: newId(), title: NEW_TITLE, createdAt: Date.now(), updatedAt: Date.now(), messages: [] });
+const titleFrom = (msgs: Msg[]) => msgs.find((m) => m.role === "user")?.content.trim().slice(0, 44) ?? "";
+const timeAgo = (t: number) => {
+  const s = Math.round((Date.now() - t) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  if (s < 86400) return `${Math.round(s / 3600)}h ago`;
+  return `${Math.round(s / 86400)}d ago`;
+};
 
 const MODES: Array<[AgentMode, string, string]> = [
   ["read", "Read-only", "Reads the page/console but never clicks or types."],
@@ -19,8 +34,9 @@ interface Live { runId: string; steps: AgentTranscriptItem[]; assistantText: str
 
 export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefill }:
   { backendUrl?: string; browserId?: string; tabId?: number; pageUrl?: string; token?: string; prefill?: string }) {
-  const key = pageKey(pageUrl);
-  const [chats, setChats] = useState<Chats>({});
+  const [sessions, setSessions] = useState<Sessions>({});
+  const [currentId, setCurrentId] = useState<string>("");
+  const [showList, setShowList] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [mode, setMode] = useState<AgentMode>("approve");
   const [attachShot, setAttachShot] = useState(false);
@@ -29,21 +45,62 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefil
   const endRef = useRef<HTMLDivElement>(null);
   const api = makeApi(backendUrl, token);
 
-  const history = chats[key] ?? [];
+  const current = sessions[currentId];
+  const history = current?.messages ?? [];
   let pageLabel = "no page";
   try { const u = new URL(pageUrl!); pageLabel = u.hostname + u.pathname; } catch { if (pageUrl) pageLabel = pageUrl; }
 
+  // Load sessions once. Sessions are global — NOT tied to page/domain — and persist across pages.
   useEffect(() => {
-    chrome.storage.local.get([STORE, MODE_STORE]).then((r) => { setChats((r[STORE] as Chats) ?? {}); if (r[MODE_STORE]) setMode(r[MODE_STORE] as AgentMode); });
+    chrome.storage.local.get([SESS, CUR, OLD, MODE_STORE]).then((r) => {
+      if (r[MODE_STORE]) setMode(r[MODE_STORE] as AgentMode);
+      const sess: Sessions = { ...(r[SESS] as Sessions) };
+      // One-time migration: fold legacy page-keyed chats into standalone sessions.
+      if (Object.keys(sess).length === 0 && r[OLD]) {
+        for (const msgs of Object.values(r[OLD] as Record<string, Msg[]>)) {
+          if (!msgs?.length) continue;
+          const s = { ...blankSession(), title: titleFrom(msgs) || NEW_TITLE, messages: msgs };
+          sess[s.id] = s;
+        }
+      }
+      let cur = r[CUR] as string | undefined;
+      if (!cur || !sess[cur]) {
+        const ids = Object.keys(sess).sort((a, b) => sess[b].updatedAt - sess[a].updatedAt);
+        if (ids.length) cur = ids[0];
+        else { const s = blankSession(); sess[s.id] = s; cur = s.id; }
+      }
+      setSessions(sess); setCurrentId(cur);
+      chrome.storage.local.set({ [SESS]: sess, [CUR]: cur });
+    });
   }, []);
-  useEffect(() => { endRef.current?.scrollIntoView({ block: "end" }); }, [history.length, key, live]);
-  useEffect(() => { setLive(null); }, [key]);
+
+  useEffect(() => { endRef.current?.scrollIntoView({ block: "end" }); }, [history.length, currentId, live]);
   useEffect(() => { if (prefill) setPrompt(prefill); }, [prefill]);
 
-  const persist = (next: Chats) => { setChats(next); chrome.storage.local.set({ [STORE]: next }); };
-  const append = (msgs: Msg[], extra: Msg[]) => persist({ ...chats, [key]: [...msgs, ...extra] });
-  const newChat = () => { persist({ ...chats, [key]: [] }); setLive(null); };
+  const saveSessions = (next: Sessions, cur = currentId) => { setSessions(next); chrome.storage.local.set({ [SESS]: next, [CUR]: cur }); };
   const changeMode = (m: AgentMode) => { setMode(m); chrome.storage.local.set({ [MODE_STORE]: m }); };
+
+  // Replace the current session's messages (titles auto-derive from the first user turn).
+  const setMessages = (msgs: Msg[]) => {
+    const s = sessions[currentId]; if (!s) return;
+    const title = s.title === NEW_TITLE ? (titleFrom(msgs) || NEW_TITLE) : s.title;
+    saveSessions({ ...sessions, [currentId]: { ...s, messages: msgs, title, updatedAt: Date.now() } });
+  };
+  const append = (prior: Msg[], extra: Msg[]) => setMessages([...prior, ...extra]);
+
+  const newChat = () => { const s = blankSession(); saveSessions({ ...sessions, [s.id]: s }, s.id); setCurrentId(s.id); setLive(null); setShowList(false); setPrompt(""); };
+  const openSession = (id: string) => { setCurrentId(id); chrome.storage.local.set({ [CUR]: id }); setLive(null); setShowList(false); };
+  const deleteSession = (id: string) => {
+    const next = { ...sessions }; delete next[id];
+    let cur = currentId;
+    if (id === currentId) {
+      const ids = Object.keys(next).sort((a, b) => next[b].updatedAt - next[a].updatedAt);
+      if (ids.length) cur = ids[0];
+      else { const s = blankSession(); next[s.id] = s; cur = s.id; }
+      setCurrentId(cur); setLive(null);
+    }
+    saveSessions(next, cur);
+  };
 
   // Poll the backend event stream for a run until it finishes / needs approval.
   const pollRun = async (runId: string, priorHistory: Msg[]) => {
@@ -73,7 +130,7 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefil
     if (!prompt.trim() || !browserId || !api.ok) { setError("Need a prompt and a connected browser."); return; }
     setError("");
     const withUser = [...history, { role: "user" as const, content: prompt }];
-    persist({ ...chats, [key]: withUser }); setPrompt("");
+    setMessages(withUser); setPrompt("");
     try {
       const res = await api.post("/api/agent/run", { browserId, tabId, prompt, mode, attachScreenshot: attachShot,
         history: history.slice(-12).map((m) => ({ role: m.role, content: m.content })) });
@@ -90,13 +147,33 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefil
   const stop = async () => { if (live) { try { await api.post("/api/agent/stop", { runId: live.runId }); } catch {} } };
 
   const busy = live !== null && live.status === "running";
+  const sortedSessions = Object.values(sessions).sort((a, b) => b.updatedAt - a.updatedAt);
 
   return (
     <section className="pad">
       <div className="row between">
-        <span className="muted ellipsis" title={pageUrl}>💬 {pageLabel}</span>
-        <button className="ghost sm" onClick={newChat} disabled={!history.length && !live}>New chat</button>
+        <button className="ghost sm" onClick={() => setShowList((v) => !v)} title="Previous chats">
+          🗂 Chats{sortedSessions.length > 1 ? ` (${sortedSessions.length})` : ""}
+        </button>
+        <span className="muted ellipsis" title={current?.title} style={{ flex: 1, textAlign: "center" }}>{current?.title ?? NEW_TITLE}</span>
+        <button className="ghost sm" onClick={newChat}>+ New</button>
       </div>
+
+      {showList && (
+        <div className="card">
+          {sortedSessions.length === 0 && <div className="muted tiny">No saved chats.</div>}
+          {sortedSessions.map((s) => (
+            <div key={s.id} className="row between listrow">
+              <button className="ghost sm" style={{ flex: 1, textAlign: "left", background: s.id === currentId ? "var(--soft)" : "transparent", overflow: "hidden" }}
+                onClick={() => openSession(s.id)}>
+                <span className="ellipsis" style={{ display: "block" }}>{s.id === currentId ? "▸ " : ""}{s.title}</span>
+                <span className="muted tiny">{timeAgo(s.updatedAt)} · {s.messages.length} msg</span>
+              </button>
+              <button className="ghost sm danger" title="Delete chat" onClick={() => deleteSession(s.id)}>✕</button>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="row" style={{ gap: 6 }}>
         <select value={mode} onChange={(e) => changeMode(e.target.value as AgentMode)} title={MODES.find((m) => m[0] === mode)?.[2]}>
@@ -104,10 +181,10 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefil
         </select>
         <label className="check"><input type="checkbox" checked={attachShot} onChange={(e) => setAttachShot(e.target.checked)} />Screenshot</label>
       </div>
-      <div className="muted tiny">{MODES.find((m) => m[0] === mode)?.[2]}</div>
+      <div className="muted tiny">Actions apply to the active tab: <b>{pageLabel}</b></div>
 
       <div className="chatlog">
-        {history.length === 0 && !live && <div className="muted">Ask me to read or act on this page. Each page keeps its own conversation.</div>}
+        {history.length === 0 && !live && <div className="muted">Ask me to read or act on the current page. This conversation follows you across pages — start a new chat anytime.</div>}
         {history.map((m, i) => <MessageBox key={i} msg={m} />)}
 
         {live && (
