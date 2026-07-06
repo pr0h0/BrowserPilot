@@ -16,6 +16,8 @@ export async function getSettings(): Promise<Settings> {
     browserName: raw?.browserName || "My Chrome",
     enableDebugger: raw?.enableDebugger ?? false,
     maxSteps: raw?.maxSteps ?? 100,
+    model: raw?.model ?? "",
+    trustedInput: raw?.trustedInput ?? true,
   };
   if (!raw?.browserId) await chrome.storage.local.set({ [KEY]: settings });
   return settings;

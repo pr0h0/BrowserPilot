@@ -82,7 +82,7 @@ export function App() {
       </nav>
 
       <main className="body">
-        {view === "chat" && <ChatPanel {...common} tabId={tab?.id} pageUrl={tab?.url} prefill={chatPrefill} maxSteps={settings?.maxSteps} />}
+        {view === "chat" && <ChatPanel {...common} tabId={tab?.id} pageUrl={tab?.url} prefill={chatPrefill} maxSteps={settings?.maxSteps} model={settings?.model} />}
         {view === "tools" && <>
           <PageTools tabId={tab?.id} />
           <SelectedElementPanel element={selected} onAskAI={askWithElement} />

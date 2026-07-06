@@ -23,9 +23,10 @@ export const isAiConfigured = () => Boolean(config.ai.apiKey);
 interface Msg { role: "system" | "user" | "assistant"; content: string }
 
 /** Single provider-agnostic completion. imageDataUrl enables vision (screenshot) where supported. */
-async function complete(messages: Msg[], imageDataUrl?: string): Promise<string> {
+async function complete(messages: Msg[], imageDataUrl?: string, modelOverride?: string): Promise<string> {
   if (!isAiConfigured()) throw new AiError("AI_NOT_CONFIGURED", "Set OPENAI_API_KEY (or ANTHROPIC_API_KEY) to enable AI chat.");
-  const { provider, apiKey, baseUrl, model } = config.ai;
+  const { provider, apiKey, baseUrl } = config.ai;
+  const model = modelOverride?.trim() || config.ai.model;
 
   if (provider === "anthropic") return completeAnthropic(messages, imageDataUrl, apiKey, baseUrl, model);
   return completeOpenAICompatible(messages, imageDataUrl, apiKey, baseUrl, model);
@@ -133,7 +134,7 @@ export async function runChat(req: ChatRequest) {
     { role: "user", content: userContent },
   ];
 
-  const answer = await complete(messages, image);
+  const answer = await complete(messages, image, req.model);
 
   // Persist thread + messages.
   const threadId = id("thread");

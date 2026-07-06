@@ -48,10 +48,11 @@ const TOOL_TO_COMMAND: Record<string, { type: string; payload?: (a: any) => unkn
   type: { type: "page.type", payload: (a) => ({ selector: a.selector, text: a.text }) },
   press_key: { type: "page.pressKey", payload: (a) => ({ selector: a.selector, key: a.key }) },
   navigate: { type: "tabs.navigate", payload: (a) => ({ url: a.url }) },
+  set_field: { type: "page.setValue", payload: (a) => ({ selector: a.selector, value: a.value, checked: a.checked }) },
   // switch_tab is handled specially (mutates session), not dispatched directly.
 };
 const READ_TOOLS = ["list_interactive", "extract_text", "get_selected_element", "get_console", "wait_for", "scroll", "screenshot", "list_tabs"];
-const ACTION_TOOLS = ["click", "type", "press_key", "navigate", "switch_tab"];
+const ACTION_TOOLS = ["click", "type", "press_key", "navigate", "switch_tab", "set_field"];
 
 const TOOL_SCHEMAS: Record<string, { description: string; params: object }> = {
   list_interactive: { description: "List clickable/typeable elements with text, CSS selector, rendered color. Call before acting.", params: { type: "object", properties: {} } },
@@ -67,6 +68,7 @@ const TOOL_SCHEMAS: Record<string, { description: string; params: object }> = {
   press_key: { description: "Press a key (e.g. Enter) on an element or the focused element. Enter submits the form.", params: { type: "object", properties: { selector: { type: "string" }, key: { type: "string" } }, required: ["key"] } },
   navigate: { description: "Navigate the current tab to a URL.", params: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
   switch_tab: { description: "Make another open tab (by id from list_tabs) the target of subsequent actions.", params: { type: "object", properties: { tabId: { type: "number" } }, required: ["tabId"] } },
+  set_field: { description: "Set a non-text form control by CSS selector: a <select> (value = the option value or visible text), a checkbox/radio (checked = true/false), or date/number/range inputs (value). Use this instead of 'type' for dropdowns and checkboxes.", params: { type: "object", properties: { selector: { type: "string" }, value: { type: "string" }, checked: { type: "boolean" } }, required: ["selector"] } },
 };
 
 interface ToolCall { id: string; name: string; args: Record<string, unknown> }
@@ -80,6 +82,7 @@ interface Session {
   pending?: ToolCall[]; iterations: number; maxSteps: number; createdAt: number;
   pendingImages: string[];
   elementLabels: Map<string, string>;         // selector → visible text, for risk classification
+  usage: { promptTokens: number; completionTokens: number };
 }
 const sessions = new Map<string, Session>();
 const DEFAULT_MAX_STEPS = 100; // per-run turn ceiling when the client doesn't set one; 0 = unlimited
@@ -107,12 +110,12 @@ export async function agentRun(req: AgentRun & { headless?: boolean }): Promise<
   const history = (req.history ?? []).slice(-12).map((h) => ({ role: h.role, content: h.content }));
 
   const s: Session = {
-    provider: config.ai.provider, model: config.ai.model, apiKey: config.ai.apiKey, baseUrl: config.ai.baseUrl,
+    provider: config.ai.provider, model: req.model?.trim() || config.ai.model, apiKey: config.ai.apiKey, baseUrl: config.ai.baseUrl,
     system: SYSTEM, messages: [...history, buildUserTurn(config.ai.provider, pageCtx + req.prompt, image)],
     mode: req.mode, browserId: req.browserId, tabId: req.tabId, domain, headless: Boolean(req.headless),
     transcript: [], events: [], status: "running", aborted: false, iterations: 0,
     maxSteps: req.maxSteps === undefined ? DEFAULT_MAX_STEPS : req.maxSteps, createdAt: Date.now(),
-    pendingImages: [], elementLabels: new Map(),
+    pendingImages: [], elementLabels: new Map(), usage: { promptTokens: 0, completionTokens: 0 },
   };
   sessions.set(runId, s);
   audit("agent:run", req.browserId, { mode: req.mode, tabId: req.tabId, headless: s.headless, prompt: req.prompt.slice(0, 200) });
@@ -153,7 +156,8 @@ export function agentEvents(runId: string, since: number): AgentEventsResponse |
   const s = sessions.get(runId);
   if (!s) return null;
   const from = Math.max(0, since | 0);
-  return { runId, status: s.status, cursor: s.events.length, events: s.events.slice(from), transcript: s.transcript.slice() };
+  const usage = { ...s.usage, totalTokens: s.usage.promptTokens + s.usage.completionTokens };
+  return { runId, status: s.status, cursor: s.events.length, events: s.events.slice(from), transcript: s.transcript.slice(), usage, model: s.model };
 }
 
 /** Background driver: loops LLM turns until done / needs approval / aborted / error. */
@@ -177,6 +181,10 @@ async function drive(runId: string): Promise<void> {
       if (out.text) emit(s, { type: "assistant", text: out.text });
 
       if (out.toolCalls.length === 0) return finish(s, out.text || "(done)");
+
+      // Mid-action URL re-verification: before deciding on any action, re-read the tab's LIVE
+      // URL so a client-side redirect can't move us onto a blocked site between turns.
+      if (out.toolCalls.some((c) => ACTION_TOOLS.includes(c.name) && c.name !== "navigate")) await refreshDomain(s);
 
       // Does this batch need approval? (any action call that isn't auto-allowed, and we're not headless)
       const decisions = out.toolCalls.map((c) => decideAction(s, c));
@@ -259,6 +267,17 @@ const labelFor = (s: Session, call: ToolCall): string => {
   if (call.name === "type") return `${call.args.text ?? ""} ${s.elementLabels.get(String(call.args.selector)) ?? ""}`;
   return "";
 };
+
+/** Re-read the live URL of the agent's target tab and update s.domain (redirect defense). */
+async function refreshDomain(s: Session) {
+  if (!registry.isOnline(s.browserId)) return;
+  try {
+    const r = (await executeCommand(s.browserId, { type: "tabs.list" })).response;
+    const tabs = (r.result as any)?.tabs ?? [];
+    const tab = s.tabId != null ? tabs.find((t: any) => t.id === s.tabId) : tabs.find((t: any) => t.active);
+    if (tab?.url) s.domain = domainOf(tab.url) || s.domain;
+  } catch { /* keep the last known domain */ }
+}
 
 // ---------- tool execution ----------
 
@@ -371,6 +390,7 @@ async function openaiTurn(s: Session): Promise<{ text: string; toolCalls: ToolCa
     } else throw new AiError("AI_REQUEST_FAILED", `${res.status}: ${t}`);
   }
   const data = await res.json() as any;
+  if (data.usage) addUsage(s, data.usage.prompt_tokens, data.usage.completion_tokens);
   const msg = data.choices?.[0]?.message ?? {};
   s.messages.push(msg);
   const toolCalls: ToolCall[] = (msg.tool_calls ?? []).map((tc: any) => ({ id: tc.id, name: tc.function?.name, args: safeJson(tc.function?.arguments) }));
@@ -387,6 +407,7 @@ async function anthropicTurn(s: Session): Promise<{ text: string; toolCalls: Too
   });
   if (!res.ok) throw new AiError("AI_REQUEST_FAILED", `${res.status}: ${await res.text()}`);
   const data = await res.json() as any;
+  if (data.usage) addUsage(s, data.usage.input_tokens, data.usage.output_tokens);
   const content = data.content ?? [];
   s.messages.push({ role: "assistant", content });
   const toolCalls: ToolCall[] = content.filter((b: any) => b.type === "tool_use").map((b: any) => ({ id: b.id, name: b.name, args: b.input ?? {} }));
@@ -395,6 +416,10 @@ async function anthropicTurn(s: Session): Promise<{ text: string; toolCalls: Too
 }
 
 // ---------- helpers ----------
+const addUsage = (s: Session, prompt = 0, completion = 0) => {
+  s.usage.promptTokens += Number(prompt) || 0;
+  s.usage.completionTokens += Number(completion) || 0;
+};
 const safeJson = (s?: string) => { try { return s ? JSON.parse(s) : {}; } catch { return {}; } };
 const hasImage = (msgs: any[]) => JSON.stringify(msgs).includes("image_url") || JSON.stringify(msgs).includes('"image"');
 function stripImages(msgs: any[]) {

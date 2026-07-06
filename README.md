@@ -207,7 +207,8 @@ Set in `.env`. Four providers are supported:
 The **Chat** tab is an agent: it can *act* on the page, not just describe it. Its tools:
 read — `list_interactive`, `extract_text`, `get_console`, `get_selected_element`, `wait_for`,
 `scroll`, `screenshot` (the model *sees* the captured image, vision models only), `list_tabs`;
-act — `click`, `type`, `press_key`, `navigate`, `switch_tab`. To click "the red Buy button", it
+act — `click`, `type`, `set_field` (checkboxes/selects/radios), `press_key`, `navigate`,
+`switch_tab`. To click "the red Buy button", it
 calls `list_interactive` (which returns each element's selector **and rendered color/text**),
 matches your description, then calls `click` with the exact selector — no coordinate guessing.
 Multi-step and **multi-tab** tasks work: it can `list_tabs`, `switch_tab`, navigate, `wait_for`
@@ -217,6 +218,12 @@ sends recent chat history so follow-ups keep context.
 Runs are **asynchronous and streamed**: `POST /api/agent/run` returns a `runId` immediately,
 the panel polls `GET /api/agent/events?runId=&since=` to show each tool call live, and a **Stop**
 button (`POST /api/agent/stop`) ends a run mid-flight.
+
+**Trusted input** (Settings → Agent, on by default): clicks and typing go through the Chrome
+debugger as real `isTrusted` events, so they work on sites that ignore synthetic clicks (React,
+canvas, anti-bot). This shows a "debugging this browser" banner; untick it to fall back to
+synthetic events. **Model** and **Max steps** are also set there, and the chat shows **token
+usage** per turn. Type **/** in the composer for **saved prompts** (Save as /prompt to add one).
 
 Right-click selected text → **Ask BrowserPilot about "…"** opens the panel with it prefilled.
 Keyboard shortcut **Ctrl/⌘+Shift+U** opens the side panel.

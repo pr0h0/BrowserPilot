@@ -2,8 +2,35 @@ import { type Command, type CommandResponse, ALWAYS_ALLOWED } from "@browserpilo
 import { tabHandlers, resolveTabId } from "./tabHandlers.js";
 import { captureVisible } from "./screenshotHandlers.js";
 import { debuggerHandlers } from "./debuggerHandlers.js";
+import { ensureAttached, cdpClick, cdpType } from "./cdpInput.js";
 import { isTabEnabled } from "./storage.js";
 import { getSettings } from "../shared/browserApi.js";
+
+// Only click + type need real isTrusted events. press_key stays synthetic (it explicitly
+// requestSubmit()s the form on Enter, which is more reliable than native key dispatch).
+const TRUSTED_ACTIONS = new Set(["page.click", "page.type"]);
+
+/** Try to run a click/type via CDP (trusted, isTrusted:true) input. Returns the result on
+ *  success, or null to signal "fall back to synthetic content-script events".
+ *  Static import: a dynamic import() pulls in Vite's preload helper which references
+ *  window/document and throws in the service worker. */
+async function tryTrustedInput(tabId: number, type: string, payload: any, timeoutMs: number): Promise<any | null> {
+  const selector: string | undefined = payload?.selector;
+  if (!selector) return null;
+  const loc = await sendToContent(tabId, "page.locate", { selector }, timeoutMs);
+  if (!loc?.ok || !loc.result?.found) return null;                 // can't locate → fall back
+  if (loc.result.isPassword) return null;                          // let content refuse password fields
+  const { x, y, urlBefore } = loc.result;
+  if (!(await ensureAttached(tabId))) return null;                 // no debugger → fall back
+  try {
+    if (type === "page.click") { await cdpClick(tabId, x, y); return { clicked: selector, trusted: true, urlBefore }; }
+    if (type === "page.type") {
+      await cdpType(tabId, x, y, String(payload.text ?? ""), !payload.append);
+      return { typed: String(payload.text ?? "").length, selector, trusted: true, mode: payload.append ? "appended" : "replaced" };
+    }
+  } catch { return null; }                                         // CDP hiccup → fall back
+  return null;
+}
 
 const ok = (id: string, result: unknown): CommandResponse => ({ id, ok: true, result });
 const fail = (id: string, code: string, message: string): CommandResponse => ({ id, ok: false, error: { code, message } });
@@ -42,6 +69,16 @@ export async function dispatchCommand(command: Command): Promise<CommandResponse
     if (!ALWAYS_ALLOWED.includes(type as any) && !isTabEnabled(resolvedTab)) {
       return fail(id, "TAB_NOT_ENABLED", `Control is not enabled for tab ${resolvedTab}. Enable it from the popup or side panel.`);
     }
+
+    // Prefer CDP trusted input for clicks/typing/keys (real isTrusted events); fall back to synthetic.
+    if (TRUSTED_ACTIONS.has(type)) {
+      const settings = await getSettings();
+      if (settings.trustedInput) {
+        const trusted = await tryTrustedInput(resolvedTab, type, payload ?? {}, timeoutMs - 500);
+        if (trusted) return ok(id, trusted);
+      }
+    }
+
     let res = await sendToContent(resolvedTab, type, payload ?? {}, timeoutMs - 500);
     // Self-heal: tabs opened before the extension loaded have no content script — inject and retry
     // once instead of telling the user to reload. (Fails on chrome:// pages; original error stands.)

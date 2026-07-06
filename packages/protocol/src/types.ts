@@ -33,6 +33,8 @@ export type AgentEvent =
   | { type: "done"; answer: string }
   | { type: "error"; code: string; message: string };
 
+export interface AgentUsage { promptTokens: number; completionTokens: number; totalTokens: number }
+
 /** Snapshot returned by /api/agent/events?runId=&since= */
 export interface AgentEventsResponse {
   runId: string;
@@ -40,6 +42,8 @@ export interface AgentEventsResponse {
   cursor: number;         // pass back as `since` next poll
   events: AgentEvent[];
   transcript: AgentTranscriptItem[];
+  usage: AgentUsage;      // cumulative token usage for the run
+  model: string;
 }
 
 export interface SelectedElement {

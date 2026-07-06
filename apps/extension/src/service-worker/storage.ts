@@ -10,6 +10,13 @@ export async function loadEnabledTabs() {
   return enabled;
 }
 
+// storage.session is the source of truth. Keep the in-memory set synced on every change so
+// that all copies of this module (bundler may duplicate it across SW chunks) agree, and so
+// the set survives service-worker restarts. Without this the command gate can read a stale set.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "session" && changes[KEY]) enabled = new Set((changes[KEY].newValue as number[]) ?? []);
+});
+
 async function persist() {
   try { await chrome.storage.session.set({ [KEY]: [...enabled] }); } catch {}
 }

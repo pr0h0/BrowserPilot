@@ -6,7 +6,9 @@ export interface Settings {
   browserId: string;
   browserName: string;
   enableDebugger: boolean;
-  maxSteps: number; // agent turns per run; 0 = unlimited
+  maxSteps: number;    // agent turns per run; 0 = unlimited
+  model: string;       // model override sent to the backend ("" = backend default)
+  trustedInput: boolean; // use CDP trusted input for clicks/typing (shows the debugging banner)
 }
 
 export const DEFAULT_BACKEND_URL = "ws://localhost:9876/ws";

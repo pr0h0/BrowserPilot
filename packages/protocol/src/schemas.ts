@@ -13,6 +13,7 @@ export const COMMAND_TYPES = [
   // page actions
   "page.click", "page.type", "page.clear", "page.focus", "page.pressKey",
   "page.scroll", "page.hover", "page.waitForSelector", "page.waitForText",
+  "page.setValue", "page.locate",
   // console
   "console.getRecent", "console.clearRecent",
   // phase 2 debugger / network
@@ -95,6 +96,7 @@ export const chatRequestSchema = z.object({
   browserId: z.string(),
   tabId: z.number().optional(),
   prompt: z.string().min(1),
+  model: z.string().max(120).optional(),
   attachments: z.object({
     pageText: z.boolean().optional(),
     selectedElement: z.boolean().optional(),
@@ -116,6 +118,8 @@ export const agentRunSchema = z.object({
   history: z.array(z.object({ role: z.enum(["user", "assistant"]), content: z.string() })).max(40).optional(),
   // Max LLM turns for this run. Omit → server default (100). 0 → unlimited (Stop is the safeguard).
   maxSteps: z.number().int().min(0).max(100_000).optional(),
+  // Override the backend's default model for this run (e.g. picked in the extension).
+  model: z.string().max(120).optional(),
 });
 
 export const agentApproveSchema = z.object({

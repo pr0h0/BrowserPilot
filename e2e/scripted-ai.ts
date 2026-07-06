@@ -3,12 +3,15 @@
 // This makes the whole agent loop deterministic against a real browser.
 let lastRequest: any = null;
 
+// Every response carries a usage block so the driver can verify token accounting.
+const USAGE = { prompt_tokens: 120, completion_tokens: 30, total_tokens: 150 };
 const tc = (name: string, args: Record<string, unknown>) => ({
+  usage: USAGE,
   choices: [{ message: { role: "assistant", content: "", tool_calls: [
     { id: `call_${name}_${Math.random().toString(36).slice(2, 8)}`, type: "function", function: { name, arguments: JSON.stringify(args) } },
   ] } }],
 });
-const final = (text: string) => ({ choices: [{ message: { role: "assistant", content: text } }] });
+const final = (text: string) => ({ usage: USAGE, choices: [{ message: { role: "assistant", content: text } }] });
 
 // Find the most recent list_tabs tool result and return its tabs array.
 function lastTabs(messages: any[]): any[] {
@@ -55,6 +58,14 @@ Bun.serve({
           case 0: return Response.json(tc("list_interactive", {})); // caches the "Delete account" label
           case 1: return Response.json(tc("click", { selector: "#danger" }));
           default: return Response.json(final("SENSITIVE DONE"));
+        }
+      }
+      // form_input: check a checkbox and choose a <select> option via set_field.
+      if (userText.includes("SCENARIO:form")) {
+        switch (toolCount) {
+          case 0: return Response.json(tc("set_field", { selector: "#agree", checked: true }));
+          case 1: return Response.json(tc("set_field", { selector: "#color", value: "Blue" }));
+          default: return Response.json(final("FORM DONE"));
         }
       }
       // Blocked site: the driver blocks 127.0.0.1 first; the click must be refused server-side.

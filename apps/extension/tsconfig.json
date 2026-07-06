@@ -5,5 +5,6 @@
     "types": ["chrome", "vite/client"],
     "lib": ["ES2023", "DOM", "DOM.Iterable"]
   },
-  "include": ["src", "vite.config.ts", "manifest.json"]
+  "include": ["src", "vite.config.ts", "manifest.json"],
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
 }

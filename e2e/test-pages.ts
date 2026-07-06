@@ -13,6 +13,8 @@ Bun.serve({
 </form>
 <button id="greet" onclick="document.getElementById('out').textContent='Hello, '+document.getElementById('q').value">Greet</button>
 <button id="danger" onclick="document.getElementById('out').textContent='DELETED'">Delete account</button>
+<label><input type="checkbox" id="agree" onchange="document.getElementById('out').textContent='agree='+this.checked"> I agree</label>
+<select id="color" onchange="document.getElementById('out').textContent+=' color='+this.value"><option value="">pick</option><option value="red">Red</option><option value="blue">Blue</option></select>
 <div id="out"></div>
 <a href="/result.html?q=link">go</a>
 <script>console.error("boom from form page");<\/script>`, { headers: { "content-type": "text/html" } });

@@ -21,12 +21,23 @@ on a live form, console capture (main-world hook), screenshots, and the agent lo
 # https://googlechromelabs.github.io/chrome-for-testing/  → linux64 chrome zip
 CHROME_BIN=/path/to/chrome-linux64/chrome ./e2e/run.sh
 ```
-Expect `ALL E2E CHECKS PASSED` (34 checks): tab gate, live click/type, console capture,
+Expect `ALL E2E CHECKS PASSED` (~40 checks): tab gate, live click/type, console capture,
 screenshots, agent auto/read-only/approve/reject, live streaming + Stop, sensitive-action floor,
-per-site block, multi-tab switch, schedules + activity. Pieces: `test-pages.ts` (:8899 form/result
-pages), `scripted-ai.ts` (:9999 fake OpenAI endpoint; fixed tool calls per SCENARIO:* prompt),
-`e2e.ts` (driver: REST + CDP on :9222). The driver clears the `127.0.0.1` site permission at
-startup so reruns are idempotent — the DB persists between runs.
+per-site block, multi-tab switch, **CDP trusted input, form_input, model override + token usage**,
+schedules + activity. Pieces: `test-pages.ts` (:8899), `scripted-ai.ts` (:9999 fake OpenAI, fixed
+tool calls per SCENARIO:* prompt; includes a `usage` block), `e2e.ts` (driver: REST + CDP on :9222).
+
+**Isolation (critical):** the test backend runs on **:9887** with a throwaway DB — NEVER :9876,
+where a developer's real browser may be connected. The driver points the test Chrome's extension
+at :9887 via a popup `saveSettings` (a SW can't `sendMessage` to itself) and targets **its own
+browserId** read from the SW (never `find(online)` — the backend may have several browsers). It
+also clears the `127.0.0.1` permission at startup for idempotency.
+
+**Gotchas:** kill ALL chrome with `pkill -9 -f chrome-linux64/chrome` between runs (a lingering old
+instance serves stale extension code and reuses a browserId → baffling failures). `chrome.storage`
+in the SW is a singleton but the per-tab gate reads `isTabEnabled` sync — fine as long as only one
+browser is targeted. Do NOT `import()` dynamically in the service worker: Vite's preload helper
+references `window` and throws — use static imports (cdpInput is statically imported for this).
 
 ## Gotchas learned the hard way
 - Start long-lived processes with `setsid nohup ... < /dev/null &` — otherwise later shell

@@ -32,6 +32,51 @@ export function type(selector: string, text: string, append = false) {
   return { typed: text.length, selector, mode: append ? "appended" : "replaced" };
 }
 
+// form_input: set a non-text control (select / checkbox / radio / date / number / range).
+export function setValue(selector: string, value?: string, checked?: boolean) {
+  const el = find(selector);
+  refuseIfPassword(el);
+  if (el instanceof HTMLInputElement && (el.type === "checkbox" || el.type === "radio")) {
+    el.checked = checked ?? /^(true|on|yes|1)$/i.test(String(value ?? ""));
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return { set: selector, checked: el.checked };
+  }
+  if (el instanceof HTMLSelectElement) {
+    const v = String(value ?? "");
+    const opt = [...el.options].find((o) => o.value === v || o.text.trim() === v || o.text.trim().toLowerCase() === v.toLowerCase());
+    if (!opt) throw Object.assign(new Error(`No <option> matching "${v}"`), { code: "TAB_NOT_FOUND" });
+    el.value = opt.value;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return { set: selector, value: el.value, label: opt.text.trim() };
+  }
+  const input = el as HTMLInputElement;
+  input.focus();
+  input.value = String(value ?? "");
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+  return { set: selector, value: input.value };
+}
+
+// Scroll an element into view and return its viewport-center coordinates (for CDP trusted input).
+export function locate(selector: string) {
+  const el = find(selector);
+  el.scrollIntoView({ block: "center", inline: "center" });
+  const r = el.getBoundingClientRect();
+  const input = el as HTMLInputElement;
+  return {
+    found: true,
+    x: Math.round(r.left + r.width / 2),
+    y: Math.round(r.top + r.height / 2),
+    tag: el.tagName.toLowerCase(),
+    type: input.type || undefined,
+    isPassword: el instanceof HTMLInputElement && el.type === "password",
+    urlBefore: location.href,
+    text: ((el as HTMLElement).innerText?.trim() || input.value || el.getAttribute("aria-label") || "").slice(0, 80),
+  };
+}
+
 export function clear(selector: string) {
   const el = find(selector) as HTMLInputElement;
   el.focus(); el.value = "";

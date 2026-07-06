@@ -1,6 +1,9 @@
 // E2E driver: real Chrome + real extension + backend + scripted model.
 // Prints ✅/❌ per check; exits 1 on any failure.
-const API = "http://127.0.0.1:9876";
+// Isolated test backend by default so the harness never touches a real backend on :9876
+// (a developer's own browser may be connected there). Override with E2E_API / E2E_WS.
+const API = process.env.E2E_API ?? "http://127.0.0.1:9887";
+const WS = process.env.E2E_WS ?? "ws://127.0.0.1:9887/ws";
 
 let failures = 0;
 const check = (name: string, cond: boolean, detail = "") => {
@@ -46,10 +49,22 @@ if (!swProbe) { console.error("BrowserPilot service worker not found — is Chro
 const EXT_ID = new URL(swProbe.url).host;
 console.log("extension id:", EXT_ID);
 
-const browsers = await api("/api/browsers");
-const me = browsers.find((b: any) => b.online);
-check("extension online in backend", Boolean(me), me?.id);
-const BID = me.id;
+// Open the popup once (SW → tabs.create); settings changes must come from a page context —
+// chrome.runtime.sendMessage from the SW to itself has no receiver.
+const sw = await Cdp.connect(swProbe.webSocketDebuggerUrl);
+await sw.eval(`chrome.tabs.create({ url: "chrome-extension://${EXT_ID}/src/popup/index.html", active: false }).then(t => t.id)`);
+let popupTarget: any;
+for (let i = 0; i < 20 && !popupTarget; i++) { await Bun.sleep(250); popupTarget = (await list()).find((t) => t.url.includes("/src/popup/index.html")); }
+const popup = await Cdp.connect(popupTarget.webSocketDebuggerUrl);
+for (let i = 0; i < 20; i++) { await Bun.sleep(200); if (await popup.eval(`!!chrome?.runtime`)) break; }
+
+// Point THIS test Chrome at the isolated test backend and read its own browserId — the backend
+// may have other browsers connected (a developer's real browser), so never use find(online).
+await popup.eval(`chrome.runtime.sendMessage({ kind: "saveSettings", settings: { backendUrl: "${WS}" } })`);
+const BID = await popup.eval(`chrome.storage.local.get("browserpilot:settings").then(r => r["browserpilot:settings"]?.browserId)`);
+let me: any;
+for (let i = 0; i < 25 && !me?.online; i++) { await Bun.sleep(1000); me = (await api("/api/browsers")).find((b: any) => b.id === BID); }
+check("this test browser is online in the isolated backend", Boolean(me?.online), BID);
 
 // Clean slate: drop any leftover permission for the test host so reruns are idempotent.
 await api("/api/permissions/127.0.0.1", { method: "DELETE" }).catch(() => {});
@@ -63,13 +78,7 @@ await Bun.sleep(1500);
 const gated = await cmd(BID, "page.extractText", {}, TAB);
 check("page.extractText refused before enabling control", !gated.ok && gated.error?.code === "TAB_NOT_ENABLED", gated.error?.code);
 
-// enable control the way the popup does (runtime message to the SW), via an extension page context
-const swTarget = (await list()).find((t) => t.type === "service_worker" && t.url.startsWith(`chrome-extension://${EXT_ID}`));
-const sw = await Cdp.connect(swTarget.webSocketDebuggerUrl);
-await sw.eval(`chrome.tabs.create({ url: "chrome-extension://${EXT_ID}/src/popup/index.html", active: false }).then(t => t.id)`);
-let popupTarget: any;
-for (let i = 0; i < 20 && !popupTarget; i++) { await Bun.sleep(250); popupTarget = (await list()).find((t) => t.url.includes("/src/popup/index.html")); }
-const popup = await Cdp.connect(popupTarget.webSocketDebuggerUrl);
+// enable control the way the popup does (runtime message to the SW), reusing the setup popup
 const enableRes = await popup.eval(`chrome.runtime.sendMessage({ kind: "setTabEnabled", tabId: ${TAB}, enabled: true })`);
 check("enabled tab control via popup message", enableRes?.ok === true, JSON.stringify(enableRes?.data));
 
@@ -194,7 +203,35 @@ const mt = await runAgent("SCENARIO:multitab", "auto");
 const switched = mt.transcript.find((t: any) => t.tool === "switch_tab");
 check("agent can switch between tabs", mt.status === "done" && switched?.ok && switched.resultSummary.includes("switched to tab"), switched?.resultSummary);
 
-// ---------- 12. scheduling + activity endpoints ----------
+// ---------- 12. CDP trusted input (real isTrusted events) ----------
+const tclick = await cmd(BID, "page.click", { selector: "#greet" }, TAB);
+check("click uses CDP trusted input (isTrusted)", tclick.ok && tclick.result?.trusted === true, JSON.stringify(tclick.result));
+const ttype = await cmd(BID, "page.type", { selector: "#q", text: "trusted" }, TAB);
+check("type uses CDP trusted input", ttype.ok && ttype.result?.trusted === true, JSON.stringify(ttype.result));
+await cmd(BID, "page.click", { selector: "#greet" }, TAB);
+const tout = await cmd(BID, "page.extractText", {}, TAB);
+check("trusted type actually landed in the field", tout.ok && tout.result.text.includes("Hello, trusted"));
+
+// ---------- 13. form_input: checkbox + select via set_field ----------
+await cmd(BID, "tabs.reload", {}, TAB); await Bun.sleep(1000);
+const form = await runAgent("SCENARIO:form", "auto");
+check("form_input agent run completes", form.status === "done" && form.answer === "FORM DONE", form.answer);
+// the page's onchange handlers reflect the new state into #out — read it back via extractText
+const fout = await cmd(BID, "page.extractText", {}, TAB);
+check("set_field checked the checkbox (change event fired)", fout.ok && fout.result.text.includes("agree=true"), fout.result?.text);
+check("set_field picked the <select> option by visible text", fout.ok && fout.result.text.includes("color=blue"), fout.result?.text);
+
+// ---------- 14. model override + token usage ----------
+const mrun = await api("/api/agent/run", { method: "POST", body: JSON.stringify({ browserId: BID, tabId: TAB, prompt: "SCENARIO:readonly", mode: "read", model: "custom-model-xyz" }) });
+const mres = await poll(mrun.runId);
+const mev = await api(`/api/agent/events?runId=${mrun.runId}&since=0`);
+check("model override is applied to the run", mev.model === "custom-model-xyz", mev.model);
+check("token usage is accounted", (mev.usage?.totalTokens ?? 0) > 0, JSON.stringify(mev.usage));
+const lastAi = await (await fetch("http://127.0.0.1:9999/last")).json() as any;
+check("override model reached the provider request", lastAi.model === "custom-model-xyz", lastAi.model);
+void mres;
+
+// ---------- 15. scheduling + activity endpoints ----------
 const sched = await api("/api/schedules", { method: "POST", body: JSON.stringify({ name: "e2e", browserId: BID, prompt: "SCENARIO:readonly", mode: "read", intervalMinutes: 60 }) });
 check("schedule created", sched.ok && sched.schedule?.id, sched.schedule?.id);
 const schedules = await api("/api/schedules");

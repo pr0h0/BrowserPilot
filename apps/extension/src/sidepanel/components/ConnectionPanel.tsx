@@ -8,16 +8,16 @@ const COLORS: Record<string, string> = { connected: "#2ecc71", connecting: "#f1c
 export function ConnectionPanel({ status, tab, onTabToggle }: { status: ConnectionStatus | null; tab: ActiveTab | null; onTabToggle: () => void }) {
   const { settings, reload } = useSettings();
   const [url, setUrl] = useState(""); const [token, setToken] = useState(""); const [name, setName] = useState("");
-  const [dbg, setDbg] = useState(false);
+  const [dbg, setDbg] = useState(false); const [model, setModel] = useState(""); const [trusted, setTrusted] = useState(true);
   const [steps, setSteps] = useState(100); const [unlimited, setUnlimited] = useState(false);
   useEffect(() => { if (settings) {
     setUrl(settings.backendUrl); setToken(settings.pairingToken); setName(settings.browserName); setDbg(settings.enableDebugger);
-    setUnlimited(settings.maxSteps === 0); setSteps(settings.maxSteps || 100);
+    setUnlimited(settings.maxSteps === 0); setSteps(settings.maxSteps || 100); setModel(settings.model); setTrusted(settings.trustedInput);
   } }, [settings]);
 
   const save = async () => {
     const maxSteps = unlimited ? 0 : Math.max(1, Math.min(100000, Math.round(steps) || 100));
-    await sendToSw({ kind: "saveSettings", settings: { backendUrl: url, pairingToken: token, browserName: name, enableDebugger: dbg, maxSteps } });
+    await sendToSw({ kind: "saveSettings", settings: { backendUrl: url, pairingToken: token, browserName: name, enableDebugger: dbg, maxSteps, model: model.trim(), trustedInput: trusted } });
     reload();
   };
   const state = status?.state ?? "disconnected";
@@ -47,25 +47,27 @@ export function ConnectionPanel({ status, tab, onTabToggle }: { status: Connecti
         </button>
         {tab?.enabled && <span className="pill">control on</span>}
       </div>
+      <h2 style={{ marginTop: 10 }}>Agent</h2>
+      <div className="row">
+        <label className="tiny" style={{ flex: "none" }}>Model</label>
+        <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="backend default" />
+      </div>
+      <div className="muted tiny">Override the backend model (e.g. <code>deepseek-chat</code>, <code>gpt-4o-mini</code>). Blank = backend default.</div>
       <div className="row" style={{ marginTop: 4 }}>
-        <label className="tiny" style={{ flex: "none" }}>Max agent steps / run</label>
+        <label className="tiny" style={{ flex: "none" }}>Max steps / run</label>
         <input type="number" min={1} max={100000} style={{ maxWidth: 90, flex: "none" }}
           value={steps} disabled={unlimited} onChange={(e) => setSteps(Number(e.target.value))} />
         <label className="check"><input type="checkbox" checked={unlimited} onChange={(e) => setUnlimited(e.target.checked)} />Unlimited</label>
       </div>
-      <div className="muted tiny">How many tool-using turns the agent may take before stopping. Save to apply. {unlimited ? "Unlimited — use Stop to end a run." : ""}</div>
       <div className="row">
-        <label style={{ fontSize: 12, display: "flex", gap: 5, alignItems: "center" }}>
-          <input type="checkbox" style={{ flex: "none" }} checked={dbg} onChange={(e) => setDbg(e.target.checked)} />
-          Enable debugger features (network capture, deep console)
-        </label>
+        <label className="check"><input type="checkbox" checked={trusted} onChange={(e) => setTrusted(e.target.checked)} />
+          Trusted input (real clicks/typing)</label>
       </div>
-      {dbg && (
-        <div className="muted" style={{ fontSize: 11 }}>
-          Also add <code>"debugger"</code> to <code>permissions</code> in manifest.json, rebuild, and reload the
-          extension — Chrome doesn't allow it as an optional permission. Save to apply.
-        </div>
-      )}
+      <div className="muted tiny">Uses the browser debugger for real <code>isTrusted</code> events — works on sites that reject synthetic clicks. Shows a "debugging this browser" banner. Off = synthetic events.</div>
+      <div className="row" style={{ marginTop: 4 }}>
+        <label className="check"><input type="checkbox" checked={dbg} onChange={(e) => setDbg(e.target.checked)} />
+          Enable network capture / deep console</label>
+      </div>
     </section>
   );
 }
