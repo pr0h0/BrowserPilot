@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { makeApi } from "../../shared/api.js";
+import { Markdown } from "./Markdown.js";
 import type { AgentMode, AgentAction, AgentTranscriptItem, AgentEvent, AgentEventsResponse } from "@browserpilot/protocol";
 
 interface Msg { role: "user" | "assistant"; content: string; actions?: AgentTranscriptItem[] }
@@ -196,7 +197,7 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefil
             {live.steps.map((t, i) => (
               <div key={i} className="muted tiny">{t.ok ? "✓" : "✗"} {t.tool}{t.resultSummary ? ` — ${t.resultSummary}` : ""}</div>
             ))}
-            {live.assistantText && <div className="prewrap" style={{ marginTop: 4 }}>{live.assistantText}</div>}
+            {live.assistantText && <div style={{ marginTop: 4 }}><Markdown text={live.assistantText} /></div>}
             {live.pending && (
               <div style={{ marginTop: 6 }}>
                 {live.pending.actions.map((a, i) => <div key={i}><code>{describeAction(a)}</code></div>)}
@@ -230,7 +231,7 @@ function MessageBox({ msg }: { msg: Msg }) {
           {msg.actions.map((t, i) => <div key={i} className="muted tiny">{t.ok ? "✓" : "✗"} {t.tool}{t.resultSummary ? ` — ${t.resultSummary}` : ""}</div>)}
         </div>
       )}
-      <div className="prewrap">{msg.content}</div>
+      {isUser ? <div className="prewrap">{msg.content}</div> : <Markdown text={msg.content} />}
     </div>
   );
 }
