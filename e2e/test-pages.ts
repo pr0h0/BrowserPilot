@@ -23,6 +23,20 @@ Bun.serve({
       return new Response(`<!doctype html><title>Result</title>
 <div id="done">RESULT PAGE</div><div id="query">${url.searchParams.get("q") ?? ""}</div>`, { headers: { "content-type": "text/html" } });
     }
+    // A minesweeper-style 3x3 grid of plain <div> cells wired via addEventListener (no onclick
+    // attribute, no <button>) — the kind of board the naive extractor was blind to. Clicking a
+    // cell reveals its data-value (changes class + text), like a real game.
+    if (url.pathname === "/grid.html") {
+      return new Response(`<!doctype html><title>Grid game</title>
+<style>#board{display:grid;grid-template-columns:repeat(3,40px);gap:2px}.cell{width:40px;height:40px;background:#ccc;cursor:pointer;display:flex;align-items:center;justify-content:center;font:16px monospace}.cell.revealed{background:#efe}</style>
+<div id="board"></div>
+<script>
+const vals=[["1","2","3"],["4","5","6"],["7","8","9"]];
+const board=document.getElementById("board");
+for(let r=0;r<3;r++)for(let c=0;c<3;c++){const d=document.createElement("div");d.className="cell";d.dataset.value=vals[r][c];d.dataset.rc=r+","+c;
+  d.addEventListener("click",()=>{d.classList.add("revealed");d.textContent=d.dataset.value;});board.appendChild(d);}
+<\/script>`, { headers: { "content-type": "text/html" } });
+    }
     return new Response("nope", { status: 404 });
   },
 });

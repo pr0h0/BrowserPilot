@@ -28,6 +28,9 @@ Finding elements:
 
 Acting:
 - After a click, the result includes url/navigated/elementText — use it to confirm.
+- Games/grids: the board changes after EVERY move. Call list_interactive again after each
+  click to read the current values (cell text and class/data state) — never act on a stale board.
+  Use x/y and reading order to reason about rows and columns.
 - type REPLACES the field's value. press_key "Enter" submits the surrounding form.
 - After navigate (or a navigating click) the page is new: wait_for a selector, then list_interactive again.
 - Work across tabs with list_tabs + switch_tab when the task needs more than one page.
@@ -55,7 +58,7 @@ const READ_TOOLS = ["list_interactive", "extract_text", "get_selected_element", 
 const ACTION_TOOLS = ["click", "type", "press_key", "navigate", "switch_tab", "set_field"];
 
 const TOOL_SCHEMAS: Record<string, { description: string; params: object }> = {
-  list_interactive: { description: "List clickable/typeable elements with text, CSS selector, rendered color. Call before acting.", params: { type: "object", properties: {} } },
+  list_interactive: { description: "List clickable/typeable elements — INCLUDING plain <div>/<td> game or grid cells — in reading order (top-left→bottom-right). Each has text, an exact CSS selector, x/y center coordinates, and its class/data attributes (which carry cell state/values). Re-call it after every move in a game or interactive grid: the board changes each click, so old values are stale.", params: { type: "object", properties: {} } },
   extract_text: { description: "Get the visible text of the current page.", params: { type: "object", properties: {} } },
   get_selected_element: { description: "Get the element the user picked with the element picker, if any.", params: { type: "object", properties: {} } },
   get_console: { description: "Get recent console errors and warnings captured on the page.", params: { type: "object", properties: {} } },
@@ -331,7 +334,7 @@ async function runTool(s: Session, call: ToolCall): Promise<{ ok: boolean; str: 
   }
 
   const result = redactSensitiveData(response.result ?? {});
-  const limit = call.name === "list_interactive" ? 30_000 : 6_000;
+  const limit = call.name === "list_interactive" ? 45_000 : 6_000;
   const raw = JSON.stringify(result);
   const clipped = raw.length > limit ? raw.slice(0, limit) + '…","_truncated":true}' : raw;
   // Fence page-derived text/DOM content so the model treats it as data (prompt-injection defense).

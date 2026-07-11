@@ -77,40 +77,62 @@ export function extractTables() {
   return { count: tables.length, tables };
 }
 
-// Clickable/typeable elements with enough signal (text + rendered color + position)
-// for an AI to pick one from a description like "the red button".
-export function listInteractive(max = 150) {
-  const sel = 'a[href], button, input, select, textarea, [role="button"], [role="link"], [role="tab"], [onclick], summary, label';
-  const seen = new Set<Element>();
-  const els = [...document.querySelectorAll(sel)].filter((el) => {
-    if (seen.has(el)) return false; seen.add(el);
+// Clickable/typeable elements with enough signal (text, position, state) for an AI to pick
+// one — including plain <div>/<td> cells that games wire up with addEventListener (detected
+// by cursor:pointer), which the naive "buttons and links" query misses entirely.
+export function listInteractive(max = 300) {
+  const cand = new Set<Element>();
+  const explicit = 'a[href], button, input, select, textarea, summary, label, [onclick], ' +
+    '[role="button"], [role="link"], [role="tab"], [role="checkbox"], [role="menuitem"], [role="option"], [role="gridcell"]';
+  document.querySelectorAll(explicit).forEach((e) => cand.add(e));
+  // JS-wired clickable elements (game cells, custom controls). Cap the scan to stay fast on huge pages.
+  const scan = [...document.querySelectorAll<HTMLElement>("div, span, td, th, li")].slice(0, 6000);
+  for (const e of scan) { if (getComputedStyle(e).cursor === "pointer") cand.add(e); }
+
+  const visible = [...cand].filter((el) => {
     const r = el.getBoundingClientRect();
     const cs = getComputedStyle(el);
-    return r.width > 0 && r.height > 0 && cs.visibility !== "hidden" && cs.display !== "none";
-  }).slice(0, max);
+    return r.width > 0 && r.height > 0 && cs.visibility !== "hidden" && cs.display !== "none" && cs.opacity !== "0";
+  });
+  // Keep the innermost clickable — drop a candidate that contains another candidate (avoids
+  // listing the whole board as one giant element).
+  const set = new Set(visible);
+  let els = visible.filter((el) => !el.querySelector("*") || ![...el.querySelectorAll("*")].some((c) => set.has(c)));
+  // Reading order: top→bottom then left→right, so array order mirrors a grid's rows.
+  els.sort((a, b) => {
+    const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+    return (Math.round(ra.top / 10) - Math.round(rb.top / 10)) || (ra.left - rb.left);
+  });
+  els = els.slice(0, max);
 
   const items = els.map((el, index) => {
     const cs = getComputedStyle(el);
     const input = el as HTMLInputElement;
+    const r = el.getBoundingClientRect();
+    const img = el.querySelector("img") as HTMLImageElement | null;
     const text = (input.value && (input.type === "submit" || input.type === "button")) ? input.value
-      : ((el as HTMLElement).innerText || el.getAttribute("aria-label") || input.placeholder || "").trim();
-    // Compact: elements are already in DOM order, so the array order conveys "first/second".
-    // Keep only what the model needs to identify + act (omit rect/color to fit more elements).
-    const ariaLabel = el.getAttribute("aria-label") || undefined;
+      : ((el as HTMLElement).innerText || el.getAttribute("aria-label") || input.placeholder
+        || img?.alt || (img ? img.src.split("/").pop() : "") || "").trim();
+    // data-* attributes and class names often carry the game state / cell value.
+    const data: Record<string, string> = {};
+    for (const a of Array.from(el.attributes)) if (a.name.startsWith("data-") && a.value) data[a.name.slice(5)] = a.value.slice(0, 40);
+    const cls = typeof el.className === "string" ? el.className.trim().slice(0, 80) : "";
     return clean({
       index, tag: el.tagName.toLowerCase(),
       role: el.getAttribute("role") || undefined,
       text: text.slice(0, 100) || undefined,
       selector: cssSelector(el),
+      x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2),
+      cls: cls || undefined,
+      data: Object.keys(data).length ? data : undefined,
       bg: cs.backgroundColor === "rgba(0, 0, 0, 0)" ? undefined : cs.backgroundColor,
-      ariaLabel: ariaLabel === text ? undefined : ariaLabel,
       title: el.getAttribute("title") || undefined,
       near: nearContext(el),
       href: el.tagName === "A" ? (el as HTMLAnchorElement).href : undefined,
-      disabled: (el as HTMLInputElement).disabled || undefined,
+      disabled: input.disabled || undefined,
     });
   });
-  return { count: items.length, elements: items };
+  return { count: items.length, elements: items, note: "top-left→bottom-right order; x,y are element-center viewport px; cls/data carry cell state" };
 }
 
 // Drop undefined fields so the JSON stays small enough to fit many elements in the model's view.

@@ -5,27 +5,26 @@ const attrSel = (tag: string, attr: string, v: string) => `${tag}[${attr}="${v.r
 
 export function cssSelector(el: Element): string {
   const tag = el.tagName.toLowerCase();
-  // Prefer stable, human-readable hooks over positional class chains.
+  // Prefer stable, unique hooks.
   if (el.id && isUnique(`#${CSS.escape(el.id)}`)) return `#${CSS.escape(el.id)}`;
   for (const attr of ["data-testid", "data-test", "data-qa", "data-cy", "name", "aria-label"]) {
     const v = el.getAttribute(attr);
     if (v && isUnique(attrSel(tag, attr, v))) return attrSel(tag, attr, v);
   }
-  // Fall back to a structural chain only when nothing stable is available.
+  // Positional chain using :nth-child — position-stable even when a cell's state classes
+  // change (e.g. .cell → .cell.revealed in a game), and verified unique. This is what makes
+  // clicking a specific grid cell reliable.
   const parts: string[] = [];
   let node: Element | null = el;
-  while (node && node.nodeType === 1 && parts.length < 5) {
-    let part = node.tagName.toLowerCase();
-    if (node.id) { parts.unshift(`#${CSS.escape(node.id)}`); break; }
-    const cls = [...node.classList].slice(0, 2).map((c) => `.${CSS.escape(c)}`).join("");
-    part += cls;
-    const parent = node.parentElement;
-    if (parent) {
-      const sameTag = [...parent.children].filter((c) => c.tagName === node!.tagName);
-      if (sameTag.length > 1) part += `:nth-of-type(${sameTag.indexOf(node) + 1})`;
-    }
-    parts.unshift(part);
-    node = node.parentElement;
+  while (node && node.nodeType === 1 && parts.length < 12) {
+    const cur: Element = node;
+    if (cur.id && isUnique(`#${CSS.escape(cur.id)}`)) { parts.unshift(`#${CSS.escape(cur.id)}`); break; }
+    const parent: Element | null = cur.parentElement;
+    if (!parent) { parts.unshift(cur.tagName.toLowerCase()); break; }
+    const idx = [...parent.children].indexOf(cur) + 1;
+    parts.unshift(`${cur.tagName.toLowerCase()}:nth-child(${idx})`);
+    if (isUnique(parts.join(" > "))) break; // shortest chain that's already unique
+    node = parent;
   }
   return parts.join(" > ");
 }

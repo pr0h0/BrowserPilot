@@ -136,7 +136,7 @@ check("all agent tools succeeded", run.transcript.every((t: any) => t.ok), tools
 const nav = await cmd(BID, "tabs.getActive");
 check("Enter really submitted the form (tab navigated to result page)",
   nav.ok && String(nav.result.url).includes("/result.html?q=hello+world"), nav.result?.url);
-const lastReq = await (await fetch("http://127.0.0.1:9999/last")).json() as any;
+const lastReq = await (await fetch(`${process.env.E2E_SAI ?? "http://127.0.0.1:9999"}/last`)).json() as any;
 check("agent run grounded with current page", JSON.stringify(lastReq).includes("[Current page"));
 
 // ---------- 5. read-only mode blocks actions server-side ----------
@@ -241,7 +241,7 @@ const mres = await poll(mrun.runId);
 const mev = await api(`/api/agent/events?runId=${mrun.runId}&since=0`);
 check("model override is applied to the run", mev.model === "custom-model-xyz", mev.model);
 check("token usage is accounted", (mev.usage?.totalTokens ?? 0) > 0, JSON.stringify(mev.usage));
-const lastAi = await (await fetch("http://127.0.0.1:9999/last")).json() as any;
+const lastAi = await (await fetch(`${process.env.E2E_SAI ?? "http://127.0.0.1:9999"}/last`)).json() as any;
 check("override model reached the provider request", lastAi.model === "custom-model-xyz", lastAi.model);
 void mres;
 

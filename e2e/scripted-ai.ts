@@ -24,8 +24,9 @@ function lastTabs(messages: any[]): any[] {
   return [];
 }
 
+const SAI_PORT = Number(process.env.SAI_PORT ?? 9999);
 Bun.serve({
-  port: 9999,
+  port: SAI_PORT,
   hostname: "127.0.0.1",
   async fetch(req) {
     const url = new URL(req.url);
@@ -99,4 +100,4 @@ Bun.serve({
     return new Response("nope", { status: 404 });
   },
 });
-console.log("scripted AI on http://127.0.0.1:9999");
+console.log(`scripted AI on http://127.0.0.1:${SAI_PORT}`);
