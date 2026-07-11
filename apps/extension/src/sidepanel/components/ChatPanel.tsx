@@ -47,6 +47,8 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefil
   const [live, setLive] = useState<Live | null>(null);
   const [prompts, setPrompts] = useState<SavedPrompt[]>([]);
   const endRef = useRef<HTMLDivElement>(null);
+  const scrollerRef = useRef<HTMLElement | null>(null);
+  const stickRef = useRef(true); // follow new output only while the user is at the bottom
   const api = makeApi(backendUrl, token);
 
   const current = sessions[currentId];
@@ -79,7 +81,20 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefil
     });
   }, []);
 
-  useEffect(() => { endRef.current?.scrollIntoView({ block: "end" }); }, [history.length, currentId, live]);
+  const scroller = () => scrollerRef.current ?? ((scrollerRef.current = (endRef.current?.closest(".body") as HTMLElement | null)));
+  const scrollToBottom = () => { const el = scroller(); if (el) el.scrollTop = el.scrollHeight; };
+  // Track whether the user is scrolled to the bottom of the panel's scroll container.
+  useEffect(() => {
+    const el = scroller();
+    if (!el) return;
+    const onScroll = () => { stickRef.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 48; };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+  // Follow output only if already at the bottom (expand in place otherwise).
+  useEffect(() => { if (stickRef.current) scrollToBottom(); }, [history.length, live]);
+  // Switching to another chat (or opening the panel) jumps to its bottom.
+  useEffect(() => { stickRef.current = true; scrollToBottom(); }, [currentId]);
   useEffect(() => { if (prefill) setPrompt(prefill); }, [prefill]);
 
   const saveSessions = (next: Sessions, cur = currentId) => { setSessions(next); chrome.storage.local.set({ [SESS]: next, [CUR]: cur }); };
@@ -209,7 +224,6 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefil
           <div className="card live">
             <div className="row between">
               <span className="pill">{live.pending ? "approval needed" : busy ? "working…" : live.status}{live.tokens ? ` · ${live.tokens} tok` : ""}</span>
-              {busy && <button className="ghost sm danger" onClick={stop}>Stop</button>}
             </div>
             {live.steps.map((t, i) => (
               <div key={i} className="muted tiny">{t.ok ? "✓" : "✗"} {t.tool}{t.resultSummary ? ` — ${t.resultSummary}` : ""}</div>
@@ -248,7 +262,10 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefil
         onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) ask(); }}
         placeholder='Ask, or type "/" for saved prompts.  (Ctrl/⌘+Enter to send)' />
       <div className="row between">
-        <button onClick={ask} disabled={busy}>{busy ? "Working…" : "Ask"}</button>
+        <span className="row" style={{ gap: 6 }}>
+          <button onClick={ask} disabled={busy}>{busy ? "Working…" : "Ask"}</button>
+          {busy && <button className="ghost danger" onClick={stop}>Stop</button>}
+        </span>
         <button className="ghost sm" onClick={saveCurrentPrompt} disabled={!prompt.trim()} title="Save the current text as a /shortcut">Save as /prompt</button>
       </div>
       {error && <div className="muted err">{error}</div>}
