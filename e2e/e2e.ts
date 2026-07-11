@@ -179,6 +179,20 @@ await api("/api/agent/stop", { method: "POST", body: JSON.stringify({ runId: loo
 const stopped = await poll(loopId, cur);
 check("stop button ends the run", stopped.status === "done" && stopped.answer.includes("Stopped by user"), stopped.answer);
 
+// ---------- 8b. steering: inject a message mid-run to redirect it ----------
+await cmd(BID, "tabs.reload", {}, TAB); await Bun.sleep(900);
+const steerId = await startAgent("SCENARIO:steer", "auto");
+let sc = 0;
+for (let i = 0; i < 3; i++) { await Bun.sleep(500); const ev = await api(`/api/agent/events?runId=${steerId}&since=${sc}`); sc = ev.cursor; }
+const evMid = await api(`/api/agent/events?runId=${steerId}&since=0`);
+check("steer: run is still active before steering", evMid.status === "running", evMid.status);
+const steerRes = await api("/api/agent/steer", { method: "POST", body: JSON.stringify({ runId: steerId, text: "STEERNOW wrap it up" }) });
+check("steer accepted by an active run", steerRes.ok === true, JSON.stringify(steerRes));
+const steered = await poll(steerId, sc);
+check("steering redirects the run mid-flight", steered.status === "done" && steered.answer.includes("STEERED") && steered.answer.includes("STEERNOW"), steered.answer);
+const steerDead = await api("/api/agent/steer", { method: "POST", body: JSON.stringify({ runId: steerId, text: "STEERNOW too late" }) });
+check("steer rejected after the run ends", steerDead.ok === false, JSON.stringify(steerDead));
+
 // ---------- 9. sensitive-action floor: auto mode still pauses for a "Delete account" click ----------
 const sens = await runAgent("SCENARIO:sensitive", "auto");
 check("sensitive action forces approval even in autonomous mode", sens.status === "awaiting_approval", sens.status);

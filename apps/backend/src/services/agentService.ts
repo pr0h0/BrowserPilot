@@ -83,6 +83,7 @@ interface Session {
   pendingImages: string[];
   elementLabels: Map<string, string>;         // selector → visible text, for risk classification
   usage: { promptTokens: number; completionTokens: number };
+  steer: string[];                            // user messages sent mid-run, injected before the next turn
 }
 const sessions = new Map<string, Session>();
 const DEFAULT_MAX_STEPS = 100; // per-run turn ceiling when the client doesn't set one; 0 = unlimited
@@ -115,7 +116,7 @@ export async function agentRun(req: AgentRun & { headless?: boolean }): Promise<
     mode: req.mode, browserId: req.browserId, tabId: req.tabId, domain, headless: Boolean(req.headless),
     transcript: [], events: [], status: "running", aborted: false, iterations: 0,
     maxSteps: req.maxSteps === undefined ? DEFAULT_MAX_STEPS : req.maxSteps, createdAt: Date.now(),
-    pendingImages: [], elementLabels: new Map(), usage: { promptTokens: 0, completionTokens: 0 },
+    pendingImages: [], elementLabels: new Map(), usage: { promptTokens: 0, completionTokens: 0 }, steer: [],
   };
   sessions.set(runId, s);
   audit("agent:run", req.browserId, { mode: req.mode, tabId: req.tabId, headless: s.headless, prompt: req.prompt.slice(0, 200) });
@@ -152,6 +153,16 @@ export function agentStop(runId: string): { runId: string; status: AgentStatus }
   return { runId, status: s?.status ?? "error" };
 }
 
+/** Steer an in-progress run: the text is injected as a user turn before the model's next step.
+ *  Returns ok:false if the run already ended (caller should start a fresh run instead). */
+export function agentSteer(runId: string, text: string): { ok: boolean } {
+  const s = sessions.get(runId);
+  if (!s || s.status === "done" || s.status === "error") return { ok: false };
+  s.steer.push(text);
+  audit("agent:steer", s.browserId, { runId, text: text.slice(0, 200) });
+  return { ok: true };
+}
+
 export function agentEvents(runId: string, since: number): AgentEventsResponse | null {
   const s = sessions.get(runId);
   if (!s) return null;
@@ -168,6 +179,14 @@ async function drive(runId: string): Promise<void> {
     // maxSteps === 0 → unlimited; the user's Stop button (and session sweep) are the safeguards.
     while (s.maxSteps === 0 || s.iterations < s.maxSteps) {
       if (s.aborted) return finish(s, "Stopped by user.");
+      // Flush any mid-run steering here — a valid message state (prior turn fully answered),
+      // so injecting user turns can't split a tool_call/tool_result pair.
+      if (s.steer.length) {
+        for (const t of s.steer.splice(0)) {
+          s.messages.push({ role: "user", content: t });
+          emit(s, { type: "status", note: `steer: ${t.slice(0, 120)}` });
+        }
+      }
       s.iterations++;
 
       let out: { text: string; toolCalls: ToolCall[] };

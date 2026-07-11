@@ -49,6 +49,12 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefil
   const endRef = useRef<HTMLDivElement>(null);
   const scrollerRef = useRef<HTMLElement | null>(null);
   const stickRef = useRef(true); // follow new output only while the user is at the bottom
+  // Latest sessions/currentId, so async appends (pollRun, steering) never clobber each other
+  // via stale closures.
+  const sessionsRef = useRef<Sessions>({});
+  const currentIdRef = useRef<string>("");
+  useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
+  useEffect(() => { currentIdRef.current = currentId; }, [currentId]);
   const api = makeApi(backendUrl, token);
 
   const current = sessions[currentId];
@@ -120,6 +126,18 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefil
   };
   const append = (prior: Msg[], extra: Msg[]) => setMessages([...prior, ...extra]);
 
+  // Append to the CURRENT session using refs (immune to stale closures during a live run).
+  const appendMsgs = (extra: Msg[]) => {
+    const cid = currentIdRef.current;
+    const s = sessionsRef.current[cid]; if (!s) return;
+    const msgs = [...s.messages, ...extra];
+    const title = s.title === NEW_TITLE ? (titleFrom(msgs) || NEW_TITLE) : s.title;
+    const next = { ...sessionsRef.current, [cid]: { ...s, messages: msgs, title, updatedAt: Date.now() } };
+    sessionsRef.current = next;
+    setSessions(next);
+    chrome.storage.local.set({ [SESS]: next, [CUR]: cid });
+  };
+
   const newChat = () => { const s = blankSession(); saveSessions({ ...sessions, [s.id]: s }, s.id); setCurrentId(s.id); setLive(null); setShowList(false); setPrompt(""); };
   const openSession = (id: string) => { setCurrentId(id); chrome.storage.local.set({ [CUR]: id }); setLive(null); setShowList(false); };
   const deleteSession = (id: string) => {
@@ -135,22 +153,22 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefil
   };
 
   // Poll the backend event stream for a run until it finishes / needs approval.
-  const pollRun = async (runId: string, priorHistory: Msg[]) => {
+  const pollRun = async (runId: string) => {
     let since = 0;
     let cur: Live = { runId, steps: [], assistantText: "", status: "running", tokens: 0 };
     setLive(cur);
     while (true) {
       let ev: AgentEventsResponse;
       try { ev = await api.get(`/api/agent/events?runId=${runId}&since=${since}`); }
-      catch (e) { append(priorHistory, [{ role: "assistant", content: `⚠ ${String(e)}` }]); setLive(null); return; }
+      catch (e) { appendMsgs([{ role: "assistant", content: `⚠ ${String(e)}` }]); setLive(null); return; }
       since = ev.cursor;
       const tokens = ev.usage?.totalTokens ?? cur.tokens;
       for (const e of ev.events as AgentEvent[]) {
         if (e.type === "tool") cur = { ...cur, steps: [...cur.steps, { tool: e.tool, args: e.args, ok: e.ok, resultSummary: e.resultSummary }] };
         else if (e.type === "assistant" && e.text) cur = { ...cur, assistantText: e.text };
         else if (e.type === "awaiting_approval") cur = { ...cur, assistantText: e.assistantText || cur.assistantText, pending: { actions: e.pendingActions } };
-        else if (e.type === "done") { append(priorHistory, [{ role: "assistant", content: e.answer, actions: cur.steps, tokens }]); setLive(null); return; }
-        else if (e.type === "error") { append(priorHistory, [{ role: "assistant", content: `⚠ ${e.code}: ${e.message}`, actions: cur.steps, tokens }]); setLive(null); return; }
+        else if (e.type === "done") { appendMsgs([{ role: "assistant", content: e.answer, actions: cur.steps, tokens }]); setLive(null); return; }
+        else if (e.type === "error") { appendMsgs([{ role: "assistant", content: `⚠ ${e.code}: ${e.message}`, actions: cur.steps, tokens }]); setLive(null); return; }
       }
       cur = { ...cur, status: ev.status, tokens };
       setLive({ ...cur });
@@ -160,26 +178,38 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefil
   };
 
   const ask = async () => {
-    if (!prompt.trim() || !browserId || !api.ok) { setError("Need a prompt and a connected browser."); return; }
-    setError("");
-    const withUser = [...history, { role: "user" as const, content: prompt }];
-    setMessages(withUser); setPrompt("");
+    const text = prompt.trim();
+    if (!text || !browserId || !api.ok) { setError("Need a prompt and a connected browser."); return; }
+    if (live?.pending) { setError("Approve or reject the pending action first."); return; }
+    setError(""); setPrompt("");
+    appendMsgs([{ role: "user", content: text }]); // always show the user's message
+
+    // A run is in progress → steer it (inject as a user turn before the model's next step)
+    // instead of starting a new run or stopping the current one.
+    if (live && live.status === "running") {
+      try { const r = await api.post("/api/agent/steer", { runId: live.runId, text }); if (r?.ok) return; }
+      catch { /* run may have just ended — fall through to a fresh run */ }
+    }
+
+    // Otherwise start a fresh run.
     try {
-      const res = await api.post("/api/agent/run", { browserId, tabId, prompt, mode, attachScreenshot: attachShot,
-        history: history.slice(-12).map((m) => ({ role: m.role, content: m.content })), maxSteps, model: model || undefined });
-      await pollRun(res.runId, withUser);
-    } catch (e) { append(withUser, [{ role: "assistant", content: `⚠ ${String(e)}` }]); }
+      const msgs = sessionsRef.current[currentIdRef.current]?.messages ?? [];
+      const hist = msgs.slice(0, -1).slice(-12).map((m) => ({ role: m.role, content: m.content }));
+      const res = await api.post("/api/agent/run", { browserId, tabId, prompt: text, mode, attachScreenshot: attachShot, history: hist, maxSteps, model: model || undefined });
+      await pollRun(res.runId);
+    } catch (e) { appendMsgs([{ role: "assistant", content: `⚠ ${String(e)}` }]); }
   };
 
   const resolve = async (approve: boolean) => {
     if (!live) return;
-    try { await api.post("/api/agent/approve", { runId: live.runId, approve }); await pollRun(live.runId, history); }
-    catch (e) { append(history, [{ role: "assistant", content: `⚠ ${String(e)}` }]); setLive(null); }
+    try { await api.post("/api/agent/approve", { runId: live.runId, approve }); await pollRun(live.runId); }
+    catch (e) { appendMsgs([{ role: "assistant", content: `⚠ ${String(e)}` }]); setLive(null); }
   };
 
   const stop = async () => { if (live) { try { await api.post("/api/agent/stop", { runId: live.runId }); } catch {} } };
 
   const busy = live !== null && live.status === "running";
+  const pending = !!live?.pending;
   const sortedSessions = Object.values(sessions).sort((a, b) => b.updatedAt - a.updatedAt);
 
   return (
@@ -260,10 +290,10 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefil
 
       <textarea rows={3} value={prompt} onChange={(e) => setPrompt(e.target.value)}
         onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ask(); } }}
-        placeholder='Ask, or type "/" for saved prompts.  (Enter to send, Shift+Enter for newline)' />
+        placeholder={busy ? "Steer the agent — your message guides its next step.  (Enter to send)" : 'Ask, or type "/" for saved prompts.  (Enter to send, Shift+Enter for newline)'} />
       <div className="row between">
         <span className="row" style={{ gap: 6 }}>
-          <button onClick={ask} disabled={busy}>{busy ? "Working…" : "Ask"}</button>
+          <button onClick={ask} disabled={pending}>{busy ? "Steer" : "Ask"}</button>
           {busy && <button className="ghost danger" onClick={stop}>Stop</button>}
         </span>
         <button className="ghost sm" onClick={saveCurrentPrompt} disabled={!prompt.trim()} title="Save the current text as a /shortcut">Save as /prompt</button>

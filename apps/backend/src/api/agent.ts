@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import { agentRunSchema, agentApproveSchema, agentStopSchema } from "@browserpilot/protocol";
-import { agentRun, agentApprove, agentStop, agentEvents } from "../services/agentService.js";
+import { agentRunSchema, agentApproveSchema, agentStopSchema, agentSteerSchema } from "@browserpilot/protocol";
+import { agentRun, agentApprove, agentStop, agentSteer, agentEvents } from "../services/agentService.js";
 import { AiError, isAiConfigured } from "../services/aiService.js";
 
 export async function agentRoutes(app: FastifyInstance) {
@@ -23,6 +23,12 @@ export async function agentRoutes(app: FastifyInstance) {
     const parsed = agentStopSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ status: "error", error: { code: "INVALID_COMMAND", message: "validation failed" } });
     return agentStop(parsed.data.runId);
+  });
+
+  app.post("/api/agent/steer", async (req, reply) => {
+    const parsed = agentSteerSchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ ok: false, error: { code: "INVALID_COMMAND", message: "validation failed" } });
+    return agentSteer(parsed.data.runId, parsed.data.text);
   });
 
   // Poll for streamed events: /api/agent/events?runId=...&since=<cursor>

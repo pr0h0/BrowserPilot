@@ -77,6 +77,13 @@ Bun.serve({
         await Bun.sleep(400);
         return Response.json(tc("list_interactive", {}));
       }
+      // Steer: loop until a steering user-message ("STEERNOW…") is injected, then finish with it.
+      if (userText.includes("SCENARIO:steer")) {
+        const steer = body.messages.find((m: any) => m.role === "user" && typeof m.content === "string" && m.content.includes("STEERNOW"));
+        if (steer) return Response.json(final(`STEERED:${steer.content}`));
+        await Bun.sleep(400);
+        return Response.json(tc("list_interactive", {}));
+      }
       // Multi-tab: list tabs, switch to the result-page tab, done.
       if (userText.includes("SCENARIO:multitab")) {
         if (toolCount === 0) return Response.json(tc("list_tabs", {}));

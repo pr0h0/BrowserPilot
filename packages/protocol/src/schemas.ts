@@ -129,6 +129,9 @@ export const agentApproveSchema = z.object({
 
 export const agentStopSchema = z.object({ runId: z.string() });
 
+// Steer a run that's in progress: injected as a user turn before the model's next step.
+export const agentSteerSchema = z.object({ runId: z.string(), text: z.string().min(1).max(4000) });
+
 // Per-site permission: "always" = act without asking, "blocked" = never act. Absent = ask (default).
 export const sitePermissionSchema = z.object({
   domain: z.string().min(1).max(255),
