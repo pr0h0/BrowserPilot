@@ -259,8 +259,8 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefil
       )}
 
       <textarea rows={3} value={prompt} onChange={(e) => setPrompt(e.target.value)}
-        onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) ask(); }}
-        placeholder='Ask, or type "/" for saved prompts.  (Ctrl/⌘+Enter to send)' />
+        onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ask(); } }}
+        placeholder='Ask, or type "/" for saved prompts.  (Enter to send, Shift+Enter for newline)' />
       <div className="row between">
         <span className="row" style={{ gap: 6 }}>
           <button onClick={ask} disabled={busy}>{busy ? "Working…" : "Ask"}</button>
