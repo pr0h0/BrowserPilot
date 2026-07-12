@@ -50,7 +50,20 @@ export function wrapUntrusted(label: string, content: string): string {
 
 // ---------- sensitive-action classification ----------
 
-const SENSITIVE_TEXT = /\b(buy|purchase|checkout|place order|pay(ment)?|subscribe|donate|confirm order|complete purchase|delete|remove|deactivate|close account|cancel subscription|transfer|send money|withdraw|publish|post publicly|share publicly|submit)\b/i;
+// Only genuinely high-risk actions — purchases/payments, irreversible deletes, publishing.
+// Kept deliberately specific so autonomous mode doesn't stop for ordinary buttons like
+// "Submit", "Search", "Play", "Guess", "Reveal", "Next".
+const SENSITIVE_TEXT = new RegExp(
+  "\\b(" + [
+    "buy now", "add to (cart|basket|bag)", "place (an )?order", "complete (purchase|order|checkout)",
+    "confirm (and pay|purchase|order|payment|booking)", "proceed to (checkout|payment)",
+    "pay now", "make (a )?payment", "checkout", "subscribe", "start (free )?trial", "donate",
+    "delete (account|all|everything|permanently)", "(permanently|forever) delete",
+    "close (account|my account)", "deactivate (account|my account)",
+    "cancel (subscription|membership|my plan|my subscription)", "unsubscribe",
+    "wire transfer", "send money", "transfer (money|funds)", "withdraw",
+    "publish", "post publicly", "share publicly", "make public",
+  ].join("|") + ")\\b", "i");
 
 /** Decide whether an agent action needs human confirmation regardless of autonomy mode.
  *  Considers the action's own text (button label / typed text) and target URL. */

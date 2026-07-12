@@ -200,10 +200,14 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefil
     } catch (e) { appendMsgs([{ role: "assistant", content: `⚠ ${String(e)}` }]); }
   };
 
+  const resolvingRef = useRef(false);
   const resolve = async (approve: boolean) => {
-    if (!live) return;
+    if (!live || resolvingRef.current) return; // guard against double-click (the backend is also idempotent)
+    resolvingRef.current = true;
+    setLive({ ...live, pending: undefined, status: "running" }); // hide the approve card immediately
     try { await api.post("/api/agent/approve", { runId: live.runId, approve }); await pollRun(live.runId); }
     catch (e) { appendMsgs([{ role: "assistant", content: `⚠ ${String(e)}` }]); setLive(null); }
+    finally { resolvingRef.current = false; }
   };
 
   const stop = async () => { if (live) { try { await api.post("/api/agent/stop", { runId: live.runId }); } catch {} } };

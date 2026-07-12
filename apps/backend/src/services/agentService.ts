@@ -130,18 +130,21 @@ export async function agentRun(req: AgentRun & { headless?: boolean }): Promise<
 export async function agentApprove(runId: string, approve: boolean): Promise<{ runId: string; status: AgentStatus }> {
   const s = sessions.get(runId);
   if (!s) return { runId, status: "error" };
+  // Idempotent: only act while genuinely paused with pending actions. A second approve (double
+  // click, or a resend racing the resume) must NOT run again — that would leave the assistant's
+  // tool_calls unanswered and spawn a concurrent drive(), producing a malformed request the model
+  // rejects ("insufficient tool messages following tool_calls").
+  if (s.status !== "awaiting_approval" || !s.pending) return { runId, status: s.status };
   const pending = s.pending; s.pending = undefined;
-  if (pending) {
-    for (const call of pending) {
-      if (approve) await execAndRecord(s, call);
-      else {
-        pushToolResult(s, call, JSON.stringify({ rejected: true, note: "User rejected this action." }));
-        record(s, call, false, "rejected by user");
-      }
+  for (const call of pending) {
+    if (approve) await execAndRecord(s, call);
+    else {
+      pushToolResult(s, call, JSON.stringify({ rejected: true, note: "User rejected this action." }));
+      record(s, call, false, "rejected by user");
     }
-    flushImages(s);
   }
-  audit("agent:approve", s.browserId, { runId, approve, actions: pending?.map((p) => p.name) });
+  flushImages(s);
+  audit("agent:approve", s.browserId, { runId, approve, actions: pending.map((p) => p.name) });
   s.status = "running";
   void drive(runId);
   return { runId, status: "running" };
@@ -174,10 +177,14 @@ export function agentEvents(runId: string, since: number): AgentEventsResponse |
   return { runId, status: s.status, cursor: s.events.length, events: s.events.slice(from), transcript: s.transcript.slice(), usage, model: s.model };
 }
 
+const driving = new Set<string>(); // guards against two drive() loops on one session (races)
+
 /** Background driver: loops LLM turns until done / needs approval / aborted / error. */
 async function drive(runId: string): Promise<void> {
   const s = sessions.get(runId);
   if (!s) return;
+  if (driving.has(runId)) return; // a loop is already running for this run
+  driving.add(runId);
   try {
     // maxSteps === 0 → unlimited; the user's Stop button (and session sweep) are the safeguards.
     while (s.maxSteps === 0 || s.iterations < s.maxSteps) {
@@ -236,6 +243,8 @@ async function drive(runId: string): Promise<void> {
     return finish(s, "Stopped after the maximum number of steps.");
   } catch (e) {
     s.status = "error"; emit(s, { type: "error", code: "UNKNOWN_ERROR", message: String(e) });
+  } finally {
+    driving.delete(runId);
   }
 }
 

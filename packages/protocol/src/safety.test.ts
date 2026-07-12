@@ -52,6 +52,18 @@ describe("sensitive-action classification", () => {
   test("navigate is never itself sensitive", () => {
     expect(classifyActionRisk({ tool: "navigate", url: "https://shop.example.com/buy" }).sensitive).toBe(false);
   });
+
+  test("ordinary buttons are NOT sensitive (autonomous mode must not stop for these)", () => {
+    for (const label of ["Submit", "Search", "Play", "Guess", "Reveal", "Next", "Start", "Save", "OK", "Continue", "Send"]) {
+      expect(classifyActionRisk({ tool: "click", label }).sensitive).toBe(false);
+    }
+  });
+
+  test("genuinely high-risk actions stay sensitive", () => {
+    for (const label of ["Buy now", "Add to cart", "Place order", "Complete purchase", "Checkout", "Subscribe", "Delete account", "Publish", "Send money"]) {
+      expect(classifyActionRisk({ tool: "click", label }).sensitive).toBe(true);
+    }
+  });
 });
 
 describe("default blocklist", () => {

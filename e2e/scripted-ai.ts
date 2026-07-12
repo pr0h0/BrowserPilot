@@ -24,6 +24,21 @@ function lastTabs(messages: any[]): any[] {
   return [];
 }
 
+// Validate OpenAI message ordering the way strict providers (DeepSeek) do: every assistant
+// tool_calls message must be immediately followed by a tool message per tool_call_id.
+function badOrdering(messages: any[]): string | null {
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (m.role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+      const need = new Set(m.tool_calls.map((tc: any) => tc.id));
+      let j = i + 1;
+      while (j < messages.length && messages[j].role === "tool") { need.delete(messages[j].tool_call_id); j++; }
+      if (need.size) return `assistant@${i} tool_calls [${[...need]}] not answered; next roles: ${messages.slice(i, i + 4).map((x: any) => x.role).join(",")}`;
+    }
+  }
+  return null;
+}
+
 const SAI_PORT = Number(process.env.SAI_PORT ?? 9999);
 Bun.serve({
   port: SAI_PORT,
@@ -33,6 +48,8 @@ Bun.serve({
     if (url.pathname === "/v1/chat/completions") {
       const body = await req.json() as any;
       lastRequest = body;
+      const bad = badOrdering(body.messages);
+      if (bad) return Response.json({ error: { message: `insufficient tool messages following tool_calls message — ${bad}`, type: "invalid_request_error" } }, { status: 400 });
       const userText = JSON.stringify(body.messages.filter((m: any) => m.role === "user"));
       const toolCount = body.messages.filter((m: any) => m.role === "tool").length;
       const sawImage = JSON.stringify(body.messages).includes("image_url");
