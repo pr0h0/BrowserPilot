@@ -34,7 +34,12 @@ Acting — be efficient:
 - Games/grids: reason about rows/columns from reading order and x/y; the "page" field after each move
   shows current cell text and class/data state — never act on a stale board.
 - type REPLACES the field's value. press_key "Enter" submits the surrounding form. set_field for
-  checkboxes/selects/radios.
+  checkboxes/selects/radios. drag(from,to) to reorder/move/slide.
+- Elements come with an accessibility view: role, text (accessible name), state (checked/expanded/
+  selected/disabled/…), plus an 'outline' of the page's headings/landmarks. Use roles + states to
+  understand widgets (e.g. an aria-expanded=false combobox, a checked checkbox).
+- upload_file(selector, path) attaches a local file to a file input; download(url) saves a file —
+  both always ask the user to approve.
 - After navigate (or a navigating click) the page is new: wait_for a selector, then list_interactive.
 - Work across tabs with list_tabs + switch_tab when the task needs more than one page.
 - Use screenshot when text is ambiguous (layout, colors, images); the image arrives next message.
@@ -56,13 +61,18 @@ const TOOL_TO_COMMAND: Record<string, { type: string; payload?: (a: any) => unkn
   press_key: { type: "page.pressKey", payload: (a) => ({ selector: a.selector, key: a.key }) },
   navigate: { type: "tabs.navigate", payload: (a) => ({ url: a.url }) },
   set_field: { type: "page.setValue", payload: (a) => ({ selector: a.selector, value: a.value, checked: a.checked }) },
+  drag: { type: "page.drag", payload: (a) => ({ from: a.from, to: a.to }) },
+  upload_file: { type: "page.upload", payload: (a) => ({ selector: a.selector, files: [a.path] }) },
+  download: { type: "downloads.download", payload: (a) => ({ url: a.url, filename: a.filename }) },
   // switch_tab is handled specially (mutates session), not dispatched directly.
 };
 const READ_TOOLS = ["list_interactive", "find", "extract_text", "get_selected_element", "get_console", "wait_for", "scroll", "screenshot", "list_tabs"];
-const ACTION_TOOLS = ["click", "type", "press_key", "navigate", "switch_tab", "set_field"];
+const ACTION_TOOLS = ["click", "type", "press_key", "navigate", "switch_tab", "set_field", "drag", "upload_file", "download"];
+// File actions always need human approval (exfiltration / untrusted-download risk), even in auto.
+const FILE_ACTIONS = new Set(["upload_file", "download"]);
 // Same-page actions whose result auto-includes the UPDATED interactive elements, so the model
 // rarely needs a separate list_interactive turn (halves LLM calls in games/grids).
-const SAME_PAGE_ACTIONS = new Set(["click", "type", "set_field", "press_key"]);
+const SAME_PAGE_ACTIONS = new Set(["click", "type", "set_field", "press_key", "drag"]);
 
 const TOOL_SCHEMAS: Record<string, { description: string; params: object }> = {
   list_interactive: { description: "List clickable/typeable elements — INCLUDING plain <div>/<td> game or grid cells — in reading order (top-left→bottom-right) with text, exact CSS selector, x/y centers, and class/data state. NOTE: click/type/set_field/press_key results ALREADY include the updated element list (field 'page'), so you usually do NOT need to call this after each action.", params: { type: "object", properties: {} } },
@@ -80,6 +90,9 @@ const TOOL_SCHEMAS: Record<string, { description: string; params: object }> = {
   navigate: { description: "Navigate the current tab to a URL.", params: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
   switch_tab: { description: "Make another open tab (by id from list_tabs) the target of subsequent actions.", params: { type: "object", properties: { tabId: { type: "number" } }, required: ["tabId"] } },
   set_field: { description: "Set a non-text form control by CSS selector: a <select> (value = the option value or visible text), a checkbox/radio (checked = true/false), or date/number/range inputs (value). Use this instead of 'type' for dropdowns and checkboxes.", params: { type: "object", properties: { selector: { type: "string" }, value: { type: "string" }, checked: { type: "boolean" } }, required: ["selector"] } },
+  drag: { description: "Drag from one element to another (e.g. reorder a list, move a card, use a slider). Both are CSS selectors.", params: { type: "object", properties: { from: { type: "string" }, to: { type: "string" } }, required: ["from", "to"] } },
+  upload_file: { description: "Upload a local file into a <input type=file> by CSS selector. 'path' is an absolute path on the machine running the browser. Always asks the user to approve.", params: { type: "object", properties: { selector: { type: "string" }, path: { type: "string" } }, required: ["selector", "path"] } },
+  download: { description: "Download a file from a URL to the browser's downloads folder. Always asks the user to approve.", params: { type: "object", properties: { url: { type: "string" }, filename: { type: "string" } }, required: ["url"] } },
 };
 
 interface ToolCall { id: string; name: string; args: Record<string, unknown> }
@@ -289,6 +302,9 @@ function decideAction(s: Session, call: ToolCall): "run" | "approve" | "refuse" 
   const targetDomain = call.name === "navigate" ? domainOf(String(call.args.url ?? "")) : s.domain;
   if (getSiteMode(targetDomain) === "blocked") return "refuse";
 
+  // File upload/download always require human approval (exfiltration / untrusted-download risk).
+  if (FILE_ACTIONS.has(call.name)) return s.headless ? "refuse" : "approve";
+
   const risk = classifyActionRisk({ tool: call.name, label: labelFor(s, call), url: String(call.args.url ?? "") });
   if (risk.sensitive) return s.headless ? "refuse" : "approve";
 
@@ -335,7 +351,7 @@ async function fetchInteractive(s: Session): Promise<any[]> {
 
 /** Small per-element view for auto-attach: enough to identify + act, without x/y/bg bloat. */
 const compactEls = (els: any[], max = 150) =>
-  els.slice(0, max).map((e) => ({ selector: e.selector, text: e.text, cls: e.cls, data: e.data, disabled: e.disabled }));
+  els.slice(0, max).map((e) => ({ selector: e.selector, role: e.role, text: e.text, state: e.state, value: e.value, cls: e.cls, data: e.data, disabled: e.disabled }));
 
 /** Rank interactive elements against a plain-language query (deterministic, no extra LLM call). */
 export function findElements(els: any[], query: string) {

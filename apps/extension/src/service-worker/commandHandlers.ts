@@ -2,9 +2,20 @@ import { type Command, type CommandResponse, ALWAYS_ALLOWED } from "@browserpilo
 import { tabHandlers, resolveTabId } from "./tabHandlers.js";
 import { captureVisible } from "./screenshotHandlers.js";
 import { debuggerHandlers } from "./debuggerHandlers.js";
-import { ensureAttached, cdpClick, cdpType } from "./cdpInput.js";
+import { ensureAttached, cdpClick, cdpType, cdpDrag, cdpSetFiles } from "./cdpInput.js";
 import { isTabEnabled } from "./storage.js";
 import { getSettings } from "../shared/browserApi.js";
+
+/** Trigger a browser download of a URL (chrome.downloads). */
+function downloadFile(payload: any): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    if (!payload?.url) return reject(Object.assign(new Error("url required"), { code: "INVALID_COMMAND" }));
+    chrome.downloads.download({ url: payload.url, filename: payload.filename }, (dlId) => {
+      if (chrome.runtime.lastError || dlId === undefined) reject(Object.assign(new Error(chrome.runtime.lastError?.message ?? "download failed"), { code: "UNKNOWN_ERROR" }));
+      else resolve({ downloadId: dlId, url: payload.url, filename: payload.filename });
+    });
+  });
+}
 
 // Only click + type need real isTrusted events. press_key stays synthetic (it explicitly
 // requestSubmit()s the form on Enter, which is more reliable than native key dispatch).
@@ -68,6 +79,25 @@ export async function dispatchCommand(command: Command): Promise<CommandResponse
     const resolvedTab = await resolveTabId(tabId);
     if (!ALWAYS_ALLOWED.includes(type as any) && !isTabEnabled(resolvedTab)) {
       return fail(id, "TAB_NOT_ENABLED", `Control is not enabled for tab ${resolvedTab}. Enable it from the popup or side panel.`);
+    }
+
+    // Download / drag / file-upload — need the debugger (drag/upload) or the downloads API.
+    if (type === "downloads.download") return ok(id, await downloadFile(payload));
+    if (type === "page.drag" || type === "page.upload") {
+      const p = (payload ?? {}) as any;
+      if (!(await ensureAttached(resolvedTab))) return fail(id, "PERMISSION_DENIED", "This action needs trusted input — enable it in BrowserPilot settings.");
+      if (type === "page.upload") {
+        const files = Array.isArray(p.files) ? p.files : p.file ? [p.file] : [];
+        if (!p.selector || !files.length) return fail(id, "INVALID_COMMAND", "upload needs a selector and file path(s).");
+        await cdpSetFiles(resolvedTab, p.selector, files);
+        return ok(id, { uploaded: files, selector: p.selector });
+      }
+      const from = await sendToContent(resolvedTab, "page.locate", { selector: p.from }, timeoutMs - 500);
+      const to = await sendToContent(resolvedTab, "page.locate", { selector: p.to }, timeoutMs - 500);
+      if (!from?.ok || !from.result?.found) return fail(id, "TAB_NOT_FOUND", `drag source not found: ${p.from}`);
+      if (!to?.ok || !to.result?.found) return fail(id, "TAB_NOT_FOUND", `drag target not found: ${p.to}`);
+      await cdpDrag(resolvedTab, from.result.x, from.result.y, to.result.x, to.result.y);
+      return ok(id, { dragged: p.from, to: p.to });
     }
 
     // Prefer CDP trusted input for clicks/typing/keys (real isTrusted events); fall back to synthetic.

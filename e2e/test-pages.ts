@@ -15,6 +15,16 @@ Bun.serve({
 <button id="danger" onclick="document.getElementById('out').textContent='DELETED'">Delete account</button>
 <label><input type="checkbox" id="agree" onchange="document.getElementById('out').textContent='agree='+this.checked"> I agree</label>
 <select id="color" onchange="document.getElementById('out').textContent+=' color='+this.value"><option value="">pick</option><option value="red">Red</option><option value="blue">Blue</option></select>
+<input type="file" id="file" onchange="document.getElementById('out').textContent='file:'+(this.files[0]?.name||'')">
+<div id="drag" style="width:30px;height:30px;background:#f00;position:absolute;left:0;top:320px"></div>
+<div id="target" style="width:70px;height:70px;background:#ccc;position:absolute;left:220px;top:300px"></div>
+<script>
+(function(){var d=document.getElementById('drag'),dragging=false,ox=0,oy=0;
+d.addEventListener('mousedown',function(e){dragging=true;ox=e.clientX-d.offsetLeft;oy=e.clientY-d.offsetTop;});
+document.addEventListener('mousemove',function(e){if(dragging){d.style.left=(e.clientX-ox)+'px';d.style.top=(e.clientY-oy)+'px';}});
+document.addEventListener('mouseup',function(){if(!dragging)return;dragging=false;var t=document.getElementById('target').getBoundingClientRect(),r=d.getBoundingClientRect();
+if(r.left<t.right&&r.right>t.left&&r.top<t.bottom&&r.bottom>t.top)document.getElementById('out').textContent='dropped';});})();
+<\/script>
 <div id="out"></div>
 <a href="/result.html?q=link">go</a>
 <script>console.error("boom from form page");<\/script>`, { headers: { "content-type": "text/html" } });

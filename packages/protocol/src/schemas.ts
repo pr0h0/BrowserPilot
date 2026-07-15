@@ -13,7 +13,7 @@ export const COMMAND_TYPES = [
   // page actions
   "page.click", "page.type", "page.clear", "page.focus", "page.pressKey",
   "page.scroll", "page.hover", "page.waitForSelector", "page.waitForText",
-  "page.setValue", "page.locate",
+  "page.setValue", "page.locate", "page.drag", "page.upload", "downloads.download",
   // console
   "console.getRecent", "console.clearRecent",
   // phase 2 debugger / network

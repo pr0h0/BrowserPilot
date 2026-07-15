@@ -30,13 +30,38 @@ export async function detach(tabId: number) {
   await new Promise<void>((resolve) => chrome.debugger.detach({ tabId }, () => { void chrome.runtime.lastError; resolve(); }));
 }
 
-const mouse = (tabId: number, type: string, x: number, y: number) =>
-  send(tabId, "Input.dispatchMouseEvent", { type, x, y, button: "left", buttons: type === "mouseMoved" ? 0 : 1, clickCount: 1 });
+const mouse = (tabId: number, type: string, x: number, y: number, buttons = 1) =>
+  send(tabId, "Input.dispatchMouseEvent", { type, x, y, button: "left", buttons, clickCount: 1 });
 
 export async function cdpClick(tabId: number, x: number, y: number) {
-  await mouse(tabId, "mouseMoved", x, y);
+  await mouse(tabId, "mouseMoved", x, y, 0);
   await mouse(tabId, "mousePressed", x, y);
   await mouse(tabId, "mouseReleased", x, y);
+}
+
+/** Trusted drag: press at (x1,y1), move in steps to (x2,y2), release. */
+export async function cdpDrag(tabId: number, x1: number, y1: number, x2: number, y2: number) {
+  await mouse(tabId, "mouseMoved", x1, y1, 0);
+  await mouse(tabId, "mousePressed", x1, y1);
+  const steps = 10;
+  for (let i = 1; i <= steps; i++) {
+    await mouse(tabId, "mouseMoved", Math.round(x1 + ((x2 - x1) * i) / steps), Math.round(y1 + ((y2 - y1) * i) / steps), 1);
+    await new Promise((r) => setTimeout(r, 12));
+  }
+  await mouse(tabId, "mouseReleased", x2, y2);
+}
+
+/** Set the files of a <input type=file> by CSS selector (paths must exist on the machine running
+ *  Chrome). Uses CDP DOM.setFileInputFiles — the only reliable way to fill a file input. */
+export async function cdpSetFiles(tabId: number, selector: string, files: string[]) {
+  await send(tabId, "DOM.enable", {});
+  const evaled = await send<{ result?: { objectId?: string } }>(tabId, "Runtime.evaluate",
+    { expression: `document.querySelector(${JSON.stringify(selector)})`, returnByValue: false });
+  const objectId = evaled?.result?.objectId;
+  if (!objectId) throw new Error(`no element for selector ${selector}`);
+  await send(tabId, "DOM.setFileInputFiles", { files, objectId });
+  await send(tabId, "Runtime.evaluate", { expression:
+    `(()=>{const el=document.querySelector(${JSON.stringify(selector)}); if(el){el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));}})()` });
 }
 
 async function selectAll(tabId: number) {

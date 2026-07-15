@@ -3,7 +3,7 @@
   "name": "BrowserPilot",
   "version": "0.1.0",
   "description": "Owner-controlled browser automation/debugging bridge. Connects outbound to your own BrowserPilot backend.",
-  "permissions": ["tabs", "activeTab", "scripting", "storage", "sidePanel", "contextMenus", "debugger"],
+  "permissions": ["tabs", "activeTab", "scripting", "storage", "sidePanel", "contextMenus", "debugger", "downloads"],
   "host_permissions": ["<all_urls>"],
   "background": { "service_worker": "src/service-worker/index.ts", "type": "module" },
   "action": { "default_popup": "src/popup/index.html", "default_title": "BrowserPilot" },

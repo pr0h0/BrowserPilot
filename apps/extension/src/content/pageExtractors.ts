@@ -77,9 +77,75 @@ export function extractTables() {
   return { count: tables.length, tables };
 }
 
-// Clickable/typeable elements with enough signal (text, position, state) for an AI to pick
-// one — including plain <div>/<td> cells that games wire up with addEventListener (detected
-// by cursor:pointer), which the naive "buttons and links" query misses entirely.
+// ---------- accessibility helpers: give the AI semantic roles / names / states ----------
+
+/** Computed ARIA role (explicit role attr, else implicit from tag/type). */
+function ariaRole(el: Element): string | undefined {
+  const explicit = el.getAttribute("role");
+  if (explicit) return explicit;
+  const tag = el.tagName.toLowerCase();
+  if (tag === "input") {
+    const t = ((el as HTMLInputElement).type || "text").toLowerCase();
+    return t === "checkbox" ? "checkbox" : t === "radio" ? "radio" : t === "range" ? "slider"
+      : (t === "submit" || t === "button" || t === "reset") ? "button" : t === "search" ? "searchbox" : "textbox";
+  }
+  const map: Record<string, string> = {
+    a: (el as HTMLAnchorElement).href ? "link" : "generic", button: "button", select: "combobox",
+    textarea: "textbox", summary: "button", nav: "navigation", main: "main", header: "banner",
+    footer: "contentinfo", aside: "complementary", form: "form",
+    h1: "heading", h2: "heading", h3: "heading", h4: "heading", h5: "heading", h6: "heading",
+  };
+  return map[tag];
+}
+
+/** Accessible name: aria-label → aria-labelledby → <label> → text → placeholder → alt → title. */
+function accessibleName(el: Element): string {
+  const aria = el.getAttribute("aria-label"); if (aria) return aria.trim();
+  const by = el.getAttribute("aria-labelledby");
+  if (by) { const t = by.split(/\s+/).map((id) => document.getElementById(id)?.innerText || "").join(" ").trim(); if (t) return t; }
+  const input = el as HTMLInputElement;
+  if (input.id) { const l = document.querySelector(`label[for="${CSS.escape(input.id)}"]`); if (l) return (l as HTMLElement).innerText.trim(); }
+  const wrap = el.closest("label"); if (wrap && wrap !== el) return wrap.innerText.trim();
+  const text = (el as HTMLElement).innerText?.trim(); if (text) return text;
+  if (input.placeholder) return input.placeholder;
+  if (input.value && (input.type === "submit" || input.type === "button")) return input.value;
+  const img = el.querySelector("img") as HTMLImageElement | null; if (img?.alt) return img.alt;
+  return el.getAttribute("title") || "";
+}
+
+/** Interactive states (checked/expanded/selected/pressed/disabled/current/required). */
+function elementState(el: Element): string[] {
+  const s: string[] = []; const g = (a: string) => el.getAttribute(a); const input = el as HTMLInputElement;
+  if (input.disabled || g("aria-disabled") === "true") s.push("disabled");
+  if ((input.type === "checkbox" || input.type === "radio") ? input.checked : g("aria-checked") === "true") s.push("checked");
+  if (g("aria-expanded") === "true") s.push("expanded"); else if (g("aria-expanded") === "false") s.push("collapsed");
+  if (g("aria-selected") === "true") s.push("selected");
+  if (g("aria-pressed") === "true") s.push("pressed");
+  if (g("aria-current") && g("aria-current") !== "false") s.push("current");
+  if (input.required || g("aria-required") === "true") s.push("required");
+  return s;
+}
+
+/** Document structure: headings (with level) and landmark regions, in reading order. */
+function pageOutline() {
+  const sel = "h1,h2,h3,h4,h5,h6,[role=heading],nav,main,header,footer,aside,form,section[aria-label],section[aria-labelledby]," +
+    "[role=navigation],[role=main],[role=banner],[role=contentinfo],[role=complementary],[role=search],[role=region]";
+  const out: Array<{ role: string; name: string; level?: number }> = [];
+  document.querySelectorAll(sel).forEach((el) => {
+    const r = el.getBoundingClientRect(); if (r.width <= 0 || r.height <= 0) return;
+    const tag = el.tagName.toLowerCase();
+    const isHeading = /^h[1-6]$/.test(tag) || el.getAttribute("role") === "heading";
+    const role = isHeading ? "heading" : ariaRole(el); if (!role) return;
+    const name = accessibleName(el).slice(0, 80);
+    if (!name && !isHeading) return;
+    out.push(isHeading ? { role, name, level: Number(tag[1]) || Number(el.getAttribute("aria-level")) || 2 } : { role, name });
+  });
+  return out.slice(0, 60);
+}
+
+// Clickable/typeable elements with enough signal (role, accessible name, state, position) for an
+// AI to pick one — including plain <div>/<td> cells that games wire up with addEventListener
+// (detected by cursor:pointer), which the naive "buttons and links" query misses entirely.
 export function listInteractive(max = 300) {
   const cand = new Set<Element>();
   const explicit = 'a[href], button, input, select, textarea, summary, label, [onclick], ' +
@@ -110,17 +176,18 @@ export function listInteractive(max = 300) {
     const input = el as HTMLInputElement;
     const r = el.getBoundingClientRect();
     const img = el.querySelector("img") as HTMLImageElement | null;
-    const text = (input.value && (input.type === "submit" || input.type === "button")) ? input.value
-      : ((el as HTMLElement).innerText || el.getAttribute("aria-label") || input.placeholder
-        || img?.alt || (img ? img.src.split("/").pop() : "") || "").trim();
+    const name = accessibleName(el) || (img ? img.src.split("/").pop() ?? "" : "");
+    const states = elementState(el);
     // data-* attributes and class names often carry the game state / cell value.
     const data: Record<string, string> = {};
     for (const a of Array.from(el.attributes)) if (a.name.startsWith("data-") && a.value) data[a.name.slice(5)] = a.value.slice(0, 40);
     const cls = typeof el.className === "string" ? el.className.trim().slice(0, 80) : "";
     return clean({
       index, tag: el.tagName.toLowerCase(),
-      role: el.getAttribute("role") || undefined,
-      text: text.slice(0, 100) || undefined,
+      role: ariaRole(el) || undefined,
+      text: name.slice(0, 100) || undefined,           // accessible name
+      state: states.length ? states.join(",") : undefined,
+      value: input.value && input.type !== "password" && input.type !== "submit" && input.type !== "button" ? String(input.value).slice(0, 60) : undefined,
       selector: cssSelector(el),
       x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2),
       cls: cls || undefined,
@@ -132,7 +199,10 @@ export function listInteractive(max = 300) {
       disabled: input.disabled || undefined,
     });
   });
-  return { count: items.length, elements: items, note: "top-left→bottom-right order; x,y are element-center viewport px; cls/data carry cell state" };
+  return {
+    count: items.length, elements: items, outline: pageOutline(),
+    note: "reading order (top-left→bottom-right). role/text(=accessible name)/state are the accessibility view; x,y are element-center viewport px; cls/data carry extra state. 'outline' is the page's heading/landmark structure.",
+  };
 }
 
 // Drop undefined fields so the JSON stays small enough to fit many elements in the model's view.

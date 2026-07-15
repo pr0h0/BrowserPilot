@@ -217,6 +217,34 @@ const mt = await runAgent("SCENARIO:multitab", "auto");
 const switched = mt.transcript.find((t: any) => t.tool === "switch_tab");
 check("agent can switch between tabs", mt.status === "done" && switched?.ok && switched.resultSummary.includes("switched to tab"), switched?.resultSummary);
 
+// ---------- 11a. accessibility perception + file/drag capabilities (direct commands) ----------
+{
+  const li = await cmd(BID, "page.listInteractive", {}, TAB);
+  const els = li.result?.elements ?? [];
+  const cb = els.find((e: any) => e.selector === "#agree" || e.role === "checkbox");
+  check("elements expose ARIA role (accessibility view)", els.some((e: any) => e.role), (els[0] || {}).role);
+  check("checkbox exposes its role + name", Boolean(cb) && cb.role === "checkbox", JSON.stringify(cb));
+  check("listInteractive returns a page outline (headings/landmarks)", Array.isArray(li.result?.outline) && li.result.outline.some((o: any) => o.role === "heading"), JSON.stringify(li.result?.outline?.slice(0, 2)));
+
+  // download a data: URL (no network needed)
+  const dl = await cmd(BID, "downloads.download", { url: "data:text/plain,browserpilot-e2e", filename: "bp-e2e.txt" }, TAB);
+  check("download tool triggers a browser download", dl.ok && typeof dl.result?.downloadId === "number", JSON.stringify(dl.result || dl.error));
+
+  // upload a real local file into the file input (CDP setFileInputFiles)
+  const upPath = `${process.env.TMPDIR ?? "/tmp"}/bp-upload-e2e.txt`;
+  await Bun.write(upPath, "hello upload");
+  const up = await cmd(BID, "page.upload", { selector: "#file", files: [upPath] }, TAB, 15000);
+  await Bun.sleep(300);
+  const upOut = await cmd(BID, "page.extractText", {}, TAB);
+  check("upload_file sets a file input via CDP", up.ok && upOut.ok && upOut.result.text.includes("file:bp-upload-e2e.txt"), up.ok ? upOut.result?.text?.slice(0, 60) : JSON.stringify(up.error));
+
+  // drag the red box onto the target
+  const dg = await cmd(BID, "page.drag", { from: "#drag", to: "#target" }, TAB, 15000);
+  await Bun.sleep(300);
+  const dgOut = await cmd(BID, "page.extractText", {}, TAB);
+  check("drag moves an element from → to (trusted mouse drag)", dg.ok && dgOut.ok && dgOut.result.text.includes("dropped"), dg.ok ? dgOut.result?.text?.slice(0, 60) : JSON.stringify(dg.error));
+}
+
 // ---------- 11b. find tool + auto-attached page state after actions ----------
 await cmd(BID, "tabs.reload", {}, TAB); await Bun.sleep(900);
 const fnd = await runAgent("SCENARIO:find", "auto");
