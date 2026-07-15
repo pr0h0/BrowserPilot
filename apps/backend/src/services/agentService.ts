@@ -21,20 +21,24 @@ Trust & safety:
 - Sensitive actions (purchases, payments, deleting/publishing/sharing) always require user approval.
 
 Finding elements:
-- Call list_interactive ONCE to get elements with their selector, text, bgColor, and "near" (the card/
-  section title the element belongs to). Use "near" to disambiguate repeated controls.
-- Click/type ONLY with an exact selector copied from list_interactive. Never invent or guess selectors.
+- Call list_interactive to see all clickable elements (selector, text, class/data state, x/y, "near").
+  For a specific target on a busy page, prefer find("plain description") — it returns ranked selectors.
+- Click/type ONLY with an exact selector from list_interactive/find. Never invent or guess selectors.
 - If nothing clearly matches, stop and ask the user to clarify — do not guess-and-retry.
 
-Acting:
-- After a click, the result includes url/navigated/elementText — use it to confirm.
-- Games/grids: the board changes after EVERY move. Call list_interactive again after each
-  click to read the current values (cell text and class/data state) — never act on a stale board.
-  Use x/y and reading order to reason about rows and columns.
-- type REPLACES the field's value. press_key "Enter" submits the surrounding form.
-- After navigate (or a navigating click) the page is new: wait_for a selector, then list_interactive again.
+Acting — be efficient:
+- click/type/set_field/press_key results ALREADY include the UPDATED element list in a "page" field.
+  So you do NOT need a separate list_interactive after each move — read "page" from the action result.
+- You MAY issue several independent actions in ONE turn (e.g. reveal two memory cards, fill several
+  fields). Prefer batching over one-action-per-turn — it is much faster.
+- Games/grids: reason about rows/columns from reading order and x/y; the "page" field after each move
+  shows current cell text and class/data state — never act on a stale board.
+- type REPLACES the field's value. press_key "Enter" submits the surrounding form. set_field for
+  checkboxes/selects/radios.
+- After navigate (or a navigating click) the page is new: wait_for a selector, then list_interactive.
 - Work across tabs with list_tabs + switch_tab when the task needs more than one page.
 - Use screenshot when text is ambiguous (layout, colors, images); the image arrives next message.
+- If a tool returns an error with a "hint", follow the hint (usually: re-read the page) instead of retrying blindly.
 
 When finished (or stuck), briefly tell the user what you did or what you need.`;
 
@@ -54,11 +58,15 @@ const TOOL_TO_COMMAND: Record<string, { type: string; payload?: (a: any) => unkn
   set_field: { type: "page.setValue", payload: (a) => ({ selector: a.selector, value: a.value, checked: a.checked }) },
   // switch_tab is handled specially (mutates session), not dispatched directly.
 };
-const READ_TOOLS = ["list_interactive", "extract_text", "get_selected_element", "get_console", "wait_for", "scroll", "screenshot", "list_tabs"];
+const READ_TOOLS = ["list_interactive", "find", "extract_text", "get_selected_element", "get_console", "wait_for", "scroll", "screenshot", "list_tabs"];
 const ACTION_TOOLS = ["click", "type", "press_key", "navigate", "switch_tab", "set_field"];
+// Same-page actions whose result auto-includes the UPDATED interactive elements, so the model
+// rarely needs a separate list_interactive turn (halves LLM calls in games/grids).
+const SAME_PAGE_ACTIONS = new Set(["click", "type", "set_field", "press_key"]);
 
 const TOOL_SCHEMAS: Record<string, { description: string; params: object }> = {
-  list_interactive: { description: "List clickable/typeable elements — INCLUDING plain <div>/<td> game or grid cells — in reading order (top-left→bottom-right). Each has text, an exact CSS selector, x/y center coordinates, and its class/data attributes (which carry cell state/values). Re-call it after every move in a game or interactive grid: the board changes each click, so old values are stale.", params: { type: "object", properties: {} } },
+  list_interactive: { description: "List clickable/typeable elements — INCLUDING plain <div>/<td> game or grid cells — in reading order (top-left→bottom-right) with text, exact CSS selector, x/y centers, and class/data state. NOTE: click/type/set_field/press_key results ALREADY include the updated element list (field 'page'), so you usually do NOT need to call this after each action.", params: { type: "object", properties: {} } },
+  find: { description: "Find the interactive element(s) best matching a plain-language description (e.g. 'the red Buy button', 'the second video's Analytics link'). Returns ranked candidates with exact selectors. Cheaper and more reliable than scanning the whole list on big pages.", params: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
   extract_text: { description: "Get the visible text of the current page.", params: { type: "object", properties: {} } },
   get_selected_element: { description: "Get the element the user picked with the element picker, if any.", params: { type: "object", properties: {} } },
   get_console: { description: "Get recent console errors and warnings captured on the page.", params: { type: "object", properties: {} } },
@@ -87,6 +95,7 @@ interface Session {
   elementLabels: Map<string, string>;         // selector → visible text, for risk classification
   usage: { promptTokens: number; completionTokens: number };
   steer: string[];                            // user messages sent mid-run, injected before the next turn
+  abort?: AbortController;                     // cancels the in-flight LLM request when the user stops
 }
 const sessions = new Map<string, Session>();
 const DEFAULT_MAX_STEPS = 100; // per-run turn ceiling when the client doesn't set one; 0 = unlimited
@@ -154,6 +163,7 @@ export function agentStop(runId: string): { runId: string; status: AgentStatus }
   const s = sessions.get(runId);
   if (s && (s.status === "running" || s.status === "awaiting_approval")) {
     s.aborted = true;
+    s.abort?.abort(); // cancel the in-flight LLM request so Stop is immediate, not only between steps
     audit("agent:stop", s.browserId, { runId });
   }
   return { runId, status: s?.status ?? "error" };
@@ -198,14 +208,17 @@ async function drive(runId: string): Promise<void> {
         }
       }
       s.iterations++;
+      pruneHistory(s.messages); // drop stale screenshots + old board dumps so long runs stay fast/cheap
 
       let out: { text: string; toolCalls: ToolCall[] };
+      s.abort = new AbortController(); // so Stop cancels the in-flight LLM request immediately
       try { out = await llmTurn(s); }
       catch (e) {
+        if (s.aborted || (e as any)?.name === "AbortError") return finish(s, "Stopped by user.");
         const code = e instanceof AiError ? e.code : "AI_REQUEST_FAILED";
         s.status = "error"; emit(s, { type: "error", code, message: String((e as Error).message ?? e) });
         return;
-      }
+      } finally { s.abort = undefined; }
       if (s.aborted) return finish(s, "Stopped by user.");
       if (out.text) emit(s, { type: "assistant", text: out.text });
 
@@ -310,6 +323,33 @@ async function refreshDomain(s: Session) {
   } catch { /* keep the last known domain */ }
 }
 
+// ---------- interactive-list helpers (shared by list_interactive, find, and auto-attach) ----------
+
+/** Fetch the current interactive elements and refresh the selector→label cache. */
+async function fetchInteractive(s: Session): Promise<any[]> {
+  const { response } = await executeCommand(s.browserId, { type: "page.listInteractive", target: { tabId: s.tabId } });
+  const elements = ((response.result as any)?.elements ?? []) as any[];
+  for (const el of elements) if (el?.selector) s.elementLabels.set(String(el.selector), String(el.text ?? el.ariaLabel ?? ""));
+  return elements;
+}
+
+/** Small per-element view for auto-attach: enough to identify + act, without x/y/bg bloat. */
+const compactEls = (els: any[], max = 150) =>
+  els.slice(0, max).map((e) => ({ selector: e.selector, text: e.text, cls: e.cls, data: e.data, disabled: e.disabled }));
+
+/** Rank interactive elements against a plain-language query (deterministic, no extra LLM call). */
+export function findElements(els: any[], query: string) {
+  const toks = query.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length > 1);
+  const scored = els.map((e) => {
+    const hay = [e.text, e.role, e.cls, e.near, e.title, e.data ? Object.values(e.data).join(" ") : ""].join(" ").toLowerCase();
+    let score = 0;
+    for (const t of toks) if (hay.includes(t)) score += 1;
+    if (e.text && query.toLowerCase().includes(String(e.text).toLowerCase().trim()) && e.text.length > 1) score += 2; // exact-ish text
+    return { e, score };
+  }).filter((x) => x.score > 0).sort((a, b) => b.score - a.score).slice(0, 8);
+  return scored.map(({ e, score }) => ({ selector: e.selector, text: e.text, role: e.role, cls: e.cls, near: e.near, x: e.x, y: e.y, score }));
+}
+
 // ---------- tool execution ----------
 
 async function runTool(s: Session, call: ToolCall): Promise<{ ok: boolean; str: string; summary: string; image?: string }> {
@@ -317,13 +357,23 @@ async function runTool(s: Session, call: ToolCall): Promise<{ ok: boolean; str: 
   // every executeCommand goes through. Do not reach the extension by any other path here.
   if (call.name === "switch_tab") return switchTab(s, call);
 
+  if (call.name === "find") {
+    const query = String(call.args.query ?? "");
+    const matches = findElements(await fetchInteractive(s), query);
+    return { ok: true, str: wrapUntrusted("find", JSON.stringify({ query, matches })), summary: `find "${query}" → ${matches.length}` };
+  }
+
   const map = TOOL_TO_COMMAND[call.name];
   if (!map) return { ok: false, str: JSON.stringify({ error: `unknown tool ${call.name}` }), summary: "unknown tool" };
   const payload = map.payload ? map.payload(call.args) : undefined;
   const { response } = await executeCommand(s.browserId, { type: map.type as any, target: { tabId: s.tabId }, payload });
   if (!response.ok) {
-    const msg = response.error?.message ?? "failed";
-    return { ok: false, str: JSON.stringify({ error: response.error?.code, message: msg }), summary: `${response.error?.code}: ${msg}`.slice(0, 120) };
+    const code = response.error?.code, msg = response.error?.message ?? "failed";
+    // Give the model a recovery hint instead of a bare error so it doesn't get stuck retrying.
+    const hint = (code === "TAB_NOT_FOUND" || code === "CONTENT_SCRIPT_FAILED")
+      ? "The element/page may have changed — call list_interactive or find to get current selectors."
+      : undefined;
+    return { ok: false, str: JSON.stringify({ error: code, message: msg, hint }), summary: `${code}: ${msg}`.slice(0, 120) };
   }
 
   // Keep the current domain in sync after navigation.
@@ -335,19 +385,24 @@ async function runTool(s: Session, call: ToolCall): Promise<{ ok: boolean; str: 
     return { ok: true, str: JSON.stringify({ captured: Boolean(image), url: r?.url, title: r?.title }), summary: "screenshot captured", image };
   }
 
-  // Cache element labels for risk classification on later click/type.
   if (call.name === "list_interactive") {
     for (const el of ((response.result as any)?.elements ?? []) as any[]) {
       if (el?.selector) s.elementLabels.set(String(el.selector), String(el.text ?? el.ariaLabel ?? ""));
     }
   }
 
-  const result = redactSensitiveData(response.result ?? {});
-  const limit = call.name === "list_interactive" ? 45_000 : 6_000;
-  const raw = JSON.stringify(result);
+  const resultObj = redactSensitiveData(response.result ?? {}) as Record<string, unknown>;
+  // Auto-attach the fresh board after a same-page action so the model sees the new state
+  // without spending a separate list_interactive turn.
+  if (SAME_PAGE_ACTIONS.has(call.name)) {
+    try { resultObj.page = compactEls(await fetchInteractive(s)); } catch { /* best effort */ }
+  }
+
+  const limit = (call.name === "list_interactive" || SAME_PAGE_ACTIONS.has(call.name)) ? 45_000 : 6_000;
+  const raw = JSON.stringify(resultObj);
   const clipped = raw.length > limit ? raw.slice(0, limit) + '…","_truncated":true}' : raw;
-  // Fence page-derived text/DOM content so the model treats it as data (prompt-injection defense).
-  const untrusted = ["list_interactive", "extract_text", "get_selected_element", "get_console"].includes(call.name);
+  // Fence page-derived content so the model treats it as data (prompt-injection defense).
+  const untrusted = ["list_interactive", "extract_text", "get_selected_element", "get_console"].includes(call.name) || resultObj.page !== undefined;
   const str = untrusted ? wrapUntrusted(call.name, clipped) : clipped;
   const summary = call.name === "click" ? `clicked ${call.args.selector}`
     : call.name === "type" ? `typed into ${call.args.selector}`
@@ -405,18 +460,68 @@ function flushImages(s: Session) {
 
 const llmTurn = (s: Session) => (s.provider === "anthropic" ? anthropicTurn(s) : openaiTurn(s));
 
+/** Keep long runs cheap: strip images from all but the most recent image-bearing message, and
+ *  truncate stale page dumps (list_interactive/find/extract_text results) once newer ones exist.
+ *  Tool_call/tool_result pairing is preserved — only message CONTENT is shortened. */
+export function pruneHistory(msgs: any[]) {
+  if (msgs.length < 10) return;
+  const hasImg = (c: any) => c.type === "image_url" || c.type === "image";
+  let lastImage = -1;
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const c = msgs[i].content;
+    if (Array.isArray(c) && (c.some(hasImg) || c.some((x: any) => x.type === "tool_result" && Array.isArray(x.content) && x.content.some(hasImg)))) { lastImage = i; break; }
+  }
+  for (let i = 0; i < msgs.length; i++) {
+    if (i === lastImage || !Array.isArray(msgs[i].content)) continue;
+    const content = msgs[i].content as any[];
+    if (content.some(hasImg)) {
+      msgs[i] = { ...msgs[i], content: content.filter((c) => c.type === "text").map((c) => c.text).join("\n") || "[image omitted]" };
+    } else if (content.some((c) => c.type === "tool_result")) { // anthropic tool_result with images
+      msgs[i] = { ...msgs[i], content: content.map((c) => c.type === "tool_result" && Array.isArray(c.content) ? { ...c, content: c.content.filter((x: any) => !hasImg(x)) } : c) };
+    }
+  }
+  // Truncate older OpenAI page dumps (keep the last two tool results full).
+  const toolIdx = msgs.map((m, i) => (m.role === "tool" ? i : -1)).filter((i) => i >= 0);
+  const keep = new Set(toolIdx.slice(-2));
+  for (const i of toolIdx) {
+    if (!keep.has(i) && typeof msgs[i].content === "string" && msgs[i].content.length > 700 &&
+        /untrusted_page_content|"elements"|"matches"|"page":/.test(msgs[i].content)) {
+      msgs[i] = { ...msgs[i], content: "[older page snapshot omitted — call list_interactive or find to re-read the current page]" };
+    }
+  }
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** POST with retry on transient failures (network error / 5xx). 4xx and aborts don't retry. */
+async function postWithRetry(url: string, headers: any, body: string, signal?: AbortSignal): Promise<Response> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(url, { method: "POST", headers, body, signal });
+      if (res.status >= 500 && attempt < 2) { await sleep(400 * (attempt + 1)); continue; }
+      return res;
+    } catch (e) {
+      if ((e as any)?.name === "AbortError") throw e; // user stopped — do not retry
+      lastErr = e;
+      if (attempt < 2) { await sleep(400 * (attempt + 1)); continue; }
+    }
+  }
+  throw lastErr ?? new Error("request failed");
+}
+
 async function openaiTurn(s: Session): Promise<{ text: string; toolCalls: ToolCall[] }> {
   const tools = toolNames(s.mode).map((n) => ({ type: "function", function: { name: n, description: TOOL_SCHEMAS[n].description, parameters: TOOL_SCHEMAS[n].params } }));
   const url = `${s.baseUrl.replace(/\/$/, "")}/chat/completions`;
   const headers = { "content-type": "application/json", authorization: `Bearer ${s.apiKey}` };
   const body = (msgs: any[]) => JSON.stringify({ model: s.model, messages: [{ role: "system", content: s.system }, ...msgs], tools, tool_choice: "auto", temperature: 0.2 });
 
-  let res = await fetch(url, { method: "POST", headers, body: body(s.messages) });
+  let res = await postWithRetry(url, headers, body(s.messages), s.abort?.signal);
   if (!res.ok) {
     const t = await res.text();
     if (/image_url|image|multimodal|variant|deserialize/i.test(t) && hasImage(s.messages)) {
       s.messages = stripImages(s.messages);
-      res = await fetch(url, { method: "POST", headers, body: body(s.messages) });
+      res = await postWithRetry(url, headers, body(s.messages), s.abort?.signal);
       if (!res.ok) throw new AiError("AI_REQUEST_FAILED", `${res.status}: ${await res.text()}`);
     } else throw new AiError("AI_REQUEST_FAILED", `${res.status}: ${t}`);
   }
@@ -431,11 +536,12 @@ async function openaiTurn(s: Session): Promise<{ text: string; toolCalls: ToolCa
 async function anthropicTurn(s: Session): Promise<{ text: string; toolCalls: ToolCall[] }> {
   const tools = toolNames(s.mode).map((n) => ({ name: n, description: TOOL_SCHEMAS[n].description, input_schema: TOOL_SCHEMAS[n].params }));
   const root = s.baseUrl.includes("anthropic") ? s.baseUrl.replace(/\/v1\/?$/, "") : "https://api.anthropic.com";
-  const res = await fetch(`${root.replace(/\/$/, "")}/v1/messages`, {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-api-key": s.apiKey, "anthropic-version": "2023-06-01" },
-    body: JSON.stringify({ model: s.model, max_tokens: 1024, system: s.system, tools, messages: s.messages }),
-  });
+  const res = await postWithRetry(
+    `${root.replace(/\/$/, "")}/v1/messages`,
+    { "content-type": "application/json", "x-api-key": s.apiKey, "anthropic-version": "2023-06-01" },
+    JSON.stringify({ model: s.model, max_tokens: 1024, system: s.system, tools, messages: s.messages }),
+    s.abort?.signal,
+  );
   if (!res.ok) throw new AiError("AI_REQUEST_FAILED", `${res.status}: ${await res.text()}`);
   const data = await res.json() as any;
   if (data.usage) addUsage(s, data.usage.input_tokens, data.usage.output_tokens);

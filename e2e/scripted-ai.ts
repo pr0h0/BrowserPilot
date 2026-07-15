@@ -102,6 +102,22 @@ Bun.serve({
         await Bun.sleep(400);
         return Response.json(tc("list_interactive", {}));
       }
+      // find + efficiency: use find() to locate a button, then click it. The click result must
+      // carry the updated "page" field (auto-attach), which the model reports back.
+      if (userText.includes("SCENARIO:find")) {
+        const toolMsgs = body.messages.filter((m: any) => m.role === "tool");
+        if (toolCount === 0) return Response.json(tc("find", { query: "greet button" }));
+        if (toolCount === 1) {
+          // read the find result to get the selector (proves find returned it)
+          const findRes = JSON.parse(toolMsgs[0].content.replace(/<\/?untrusted_page_content[^>]*>/g, "").replace(/^\s*\[!\][^\n]*\n/, "").trim());
+          const sel = findRes.matches?.find((m: any) => m.selector === "#greet")?.selector ?? findRes.matches?.[0]?.selector;
+          return Response.json(tc("click", { selector: sel }));
+        }
+        // after the click, the tool result includes "page" (auto-attached fresh elements)
+        const clickMsg = toolMsgs[toolCount - 1].content;
+        const hasPage = clickMsg.includes('"page"');
+        return Response.json(final(`FIND DONE page-attached:${hasPage}`));
+      }
       // Multi-tab: list tabs, switch to the result-page tab, done.
       if (userText.includes("SCENARIO:multitab")) {
         if (toolCount === 0) return Response.json(tc("list_tabs", {}));

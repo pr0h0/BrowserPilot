@@ -217,6 +217,13 @@ const mt = await runAgent("SCENARIO:multitab", "auto");
 const switched = mt.transcript.find((t: any) => t.tool === "switch_tab");
 check("agent can switch between tabs", mt.status === "done" && switched?.ok && switched.resultSummary.includes("switched to tab"), switched?.resultSummary);
 
+// ---------- 11b. find tool + auto-attached page state after actions ----------
+await cmd(BID, "tabs.reload", {}, TAB); await Bun.sleep(900);
+const fnd = await runAgent("SCENARIO:find", "auto");
+const fndTools = fnd.transcript.map((t: any) => t.tool);
+check("agent used find() to locate the element", fndTools.includes("find"), fndTools.join(" "));
+check("find→click succeeded and click result auto-included the updated page", fnd.status === "done" && fnd.answer.includes("page-attached:true"), fnd.answer);
+
 // ---------- 12. CDP trusted input (real isTrusted events) ----------
 const tclick = await cmd(BID, "page.click", { selector: "#greet" }, TAB);
 check("click uses CDP trusted input (isTrusted)", tclick.ok && tclick.result?.trusted === true, JSON.stringify(tclick.result));
