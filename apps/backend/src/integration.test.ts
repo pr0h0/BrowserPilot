@@ -16,6 +16,7 @@ process.env.OPENAI_API_KEY = "";
 process.env.ANTHROPIC_API_KEY = "";
 
 const { buildApp } = await import("./app.js");
+const { _resetRateLimit } = await import("./util/rateLimit.js");
 const { attachWsServer } = await import("./ws/wsServer.js");
 
 let base = "";
@@ -193,5 +194,77 @@ describe("workflows and chat", () => {
     const res = await post("/api/chat", { browserId: "br_main", prompt: "hi" }, AUTH);
     expect(res.status).toBe(503);
     expect(((await res.json()) as any).error.code).toBe("AI_NOT_CONFIGURED");
+  });
+});
+
+describe("auth surface", () => {
+  test("every route except /health requires the token", async () => {
+    // Enumerate what the app actually serves rather than a hand-kept list — a route added
+    // later without auth should fail this test, not ship.
+    const routes = app.printRoutes({ commonPrefix: false })
+      .split("\n").map((l) => l.match(/(\/[\w:/.-]*)\s+\(/)?.[1]).filter(Boolean) as string[];
+    const paths = [...new Set(routes)].filter((p) => p !== "/health" && !p.includes(":"));
+    expect(paths.length).toBeGreaterThan(3);
+    for (const path of paths) {
+      _resetRateLimit();  // isolate auth from the throttle, which would otherwise 429 partway
+      const res = await app.inject({ method: "GET", url: path });
+      // 404 = route exists only for another method; what must never happen is 200.
+      expect({ path, denied: res.statusCode === 401 || res.statusCode === 404 }).toEqual({ path, denied: true });
+    }
+  });
+
+  test("/health is public but leaks no configuration", async () => {
+    _resetRateLimit();
+    const res = await app.inject({ method: "GET", url: "/health" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.ok).toBe(true);
+    expect(Object.keys(body).sort()).toEqual(["ok", "service", "time"]);
+  });
+
+  test("repeated wrong tokens get throttled, not just rejected", async () => {
+    _resetRateLimit();
+    let last = 0;
+    for (let i = 0; i < 12; i++) {
+      last = (await app.inject({ method: "GET", url: "/api/browsers", headers: { authorization: "Bearer wrong" } })).statusCode;
+    }
+    expect(last).toBe(429);
+    // …but a correct token still gets through: the throttle must not lock the owner out.
+    const good = await app.inject({ method: "GET", url: "/api/browsers", headers: { authorization: "Bearer test-secret" } });
+    expect(good.statusCode).toBe(200);
+    _resetRateLimit();
+  });
+
+  test("failed REST auth is written to the audit log with the source IP", async () => {
+    _resetRateLimit();
+    const before = (await app.inject({ method: "GET", url: "/api/activity?action=auth", headers: { authorization: "Bearer test-secret" } })).json().items.length;
+    await app.inject({ method: "GET", url: "/api/browsers", headers: { authorization: "Bearer nope" } });
+    const items = (await app.inject({ method: "GET", url: "/api/activity?action=auth", headers: { authorization: "Bearer test-secret" } })).json().items;
+    expect(items.length).toBe(before + 1);
+    const rec = items[0];
+    expect(rec.action).toBe("auth:rejected");
+    expect(rec.details.surface).toBe("rest");
+    expect(rec.details.path).toBe("/api/browsers");
+    expect(typeof rec.details.ip).toBe("string");
+    expect(rec.details.credentialOffered).toBe(true);
+    // the token itself must never reach the log
+    expect(JSON.stringify(rec)).not.toContain("nope");
+  });
+
+  test("a throttled spray stops writing audit rows", async () => {
+    _resetRateLimit();
+    const before = (await app.inject({ method: "GET", url: "/api/activity?action=auth", headers: { authorization: "Bearer test-secret" } })).json().items.length;
+    for (let i = 0; i < 25; i++) await app.inject({ method: "GET", url: "/api/browsers", headers: { authorization: "Bearer nope" } });
+    const after = (await app.inject({ method: "GET", url: "/api/activity?action=auth", headers: { authorization: "Bearer test-secret" } })).json().items.length;
+    expect(after - before).toBe(10);           // capped by the throttle, not one row per request
+    const items = (await app.inject({ method: "GET", url: "/api/activity?action=auth", headers: { authorization: "Bearer test-secret" } })).json().items;
+    expect(items[0].action).toBe("auth:locked"); // the last one recorded says it locked
+    _resetRateLimit();
+  });
+
+  test("a wrong token is rejected", async () => {
+    _resetRateLimit();
+    const res = await app.inject({ method: "GET", url: "/api/browsers", headers: { authorization: "Bearer wrong" } });
+    expect(res.statusCode).toBe(401);
   });
 });

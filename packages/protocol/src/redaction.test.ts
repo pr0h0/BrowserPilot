@@ -57,7 +57,7 @@ describe("redactText (free-text scrubbing)", () => {
   });
 
   test("sk- style API keys", () => {
-    expect(redactText("using sk-07811d722c094b9ca8822a90f64dfc1f here")).not.toContain("sk-078");
+    expect(redactText("using sk-0000000000000000000000000000000f here")).not.toContain("sk-0000");
   });
 
   test("key:value and key=value pairs, quoted and bare", () => {

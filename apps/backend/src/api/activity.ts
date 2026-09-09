@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { eq, desc } from "drizzle-orm";
+import { eq, and, desc, like } from "drizzle-orm";
 import { db, schema } from "../db/client.js";
 
 const safe = (s: string | null) => { try { return s ? JSON.parse(s) : null; } catch { return null; } };
@@ -7,11 +7,18 @@ const safe = (s: string | null) => { try { return s ? JSON.parse(s) : null; } ca
 export async function activityRoutes(app: FastifyInstance) {
   // Unified recent-activity feed (audit log + command lifecycle) for the History tab.
   app.get("/api/activity", async (req) => {
-    const { browserId, limit } = req.query as { browserId?: string; limit?: string };
+    // `action` accepts a prefix ("auth", "agent") so a security check is one call:
+    //   GET /api/activity?action=auth  → every rejected/locked attempt, newest first.
+    const { browserId, limit, action } = req.query as { browserId?: string; limit?: string; action?: string };
     const lim = Math.min(Number(limit ?? 100), 500);
 
+    const filters = [
+      browserId ? eq(schema.auditLogs.browserId, browserId) : undefined,
+      action ? like(schema.auditLogs.action, `${action}%`) : undefined,
+    ].filter(Boolean);
+
     const audits = db.select().from(schema.auditLogs)
-      .where(browserId ? eq(schema.auditLogs.browserId, browserId) : undefined)
+      .where(filters.length ? and(...filters) : undefined)
       .orderBy(desc(schema.auditLogs.createdAt)).limit(lim).all();
 
     const items = audits.map((a) => ({
