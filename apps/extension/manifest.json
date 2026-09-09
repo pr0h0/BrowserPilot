@@ -3,23 +3,60 @@
   "name": "BrowserPilot",
   "version": "0.1.0",
   "description": "Owner-controlled browser automation/debugging bridge. Connects outbound to your own BrowserPilot backend.",
-  "permissions": ["tabs", "activeTab", "scripting", "storage", "sidePanel", "contextMenus", "debugger", "downloads"],
-  "host_permissions": ["<all_urls>"],
-  "background": { "service_worker": "src/service-worker/index.ts", "type": "module" },
-  "action": { "default_popup": "src/popup/index.html", "default_title": "BrowserPilot" },
-  "side_panel": { "default_path": "src/sidepanel/index.html" },
+  "permissions": [
+    "tabs",
+    "activeTab",
+    "scripting",
+    "storage",
+    "sidePanel",
+    "contextMenus",
+    "debugger",
+    "downloads",
+    "notifications"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "src/service-worker/index.ts",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "src/popup/index.html",
+    "default_title": "BrowserPilot",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "src/sidepanel/index.html"
+  },
   "commands": {
     "open-side-panel": {
-      "suggested_key": { "default": "Ctrl+Shift+U", "mac": "Command+Shift+U" },
+      "suggested_key": {
+        "default": "Ctrl+Shift+U",
+        "mac": "Command+Shift+U"
+      },
       "description": "Open the BrowserPilot side panel"
     }
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
-      "js": ["src/content/index.ts"],
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "src/content/index.ts"
+      ],
       "run_at": "document_start",
       "all_frames": false
     }
-  ]
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
 }

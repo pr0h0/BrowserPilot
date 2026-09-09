@@ -59,6 +59,10 @@ export function App() {
         </button>
       </div>
       <div className="row"><button onClick={openPanel}>Open side panel</button></div>
+
+      <div className="muted" style={{ textAlign: "center", marginTop: 8, fontSize: 11 }}>
+        v{chrome.runtime.getManifest().version} · built {__BUILD_TIME__}
+      </div>
     </div>
   );
 }

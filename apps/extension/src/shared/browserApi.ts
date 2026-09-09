@@ -18,6 +18,7 @@ export async function getSettings(): Promise<Settings> {
     maxSteps: raw?.maxSteps ?? 100,
     model: raw?.model ?? "",
     trustedInput: raw?.trustedInput ?? true,
+    notifications: raw?.notifications ?? true,
   };
   if (!raw?.browserId) await chrome.storage.local.set({ [KEY]: settings });
   return settings;

@@ -10,10 +10,14 @@ export const COMMAND_TYPES = [
   "page.extractText", "page.extractHTML", "page.extractMetadata", "page.extractLinks",
   "page.extractImages", "page.extractForms", "page.extractTables", "page.getSelection",
   "page.getSelectedElement", "page.startElementPicker", "page.stopElementPicker", "page.listInteractive",
+  // workflow recording (teach-by-demonstration)
+  "page.startRecorder", "page.stopRecorder",
   // page actions
   "page.click", "page.type", "page.clear", "page.focus", "page.pressKey",
   "page.scroll", "page.hover", "page.waitForSelector", "page.waitForText",
   "page.setValue", "page.locate", "page.drag", "page.upload", "downloads.download",
+  // UI: desktop notification, so a run that pauses for approval is visible with the panel closed
+  "ui.notify",
   // console
   "console.getRecent", "console.clearRecent",
   // phase 2 debugger / network
@@ -28,7 +32,7 @@ export const commandTypeSchema = z.enum(COMMAND_TYPES);
 export const ALWAYS_ALLOWED: CommandType[] = [
   "tabs.list", "tabs.open", "tabs.close", "tabs.reload", "tabs.activate",
   "tabs.getActive", "tabs.navigate", "tabs.goBack", "tabs.goForward", "tabs.captureVisible",
-  "console.getRecent", "console.clearRecent",
+  "console.getRecent", "console.clearRecent", "ui.notify",
 ];
 
 export const capabilitySchema = z.enum([

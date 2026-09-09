@@ -33,6 +33,13 @@ export async function detach(tabId: number) {
 const mouse = (tabId: number, type: string, x: number, y: number, buttons = 1) =>
   send(tabId, "Input.dispatchMouseEvent", { type, x, y, button: "left", buttons, clickCount: 1 });
 
+/** Move the real pointer without pressing. The page renders its own hover state (canvas cell
+ *  highlight, tooltip, :hover CSS) — that rendering is the ground truth for "am I on target?",
+ *  which a screenshot then confirms. */
+export async function cdpHover(tabId: number, x: number, y: number) {
+  await mouse(tabId, "mouseMoved", x, y, 0);
+}
+
 export async function cdpClick(tabId: number, x: number, y: number) {
   await mouse(tabId, "mouseMoved", x, y, 0);
   await mouse(tabId, "mousePressed", x, y);

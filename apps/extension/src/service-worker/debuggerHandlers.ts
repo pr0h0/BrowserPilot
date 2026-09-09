@@ -1,6 +1,9 @@
 // Optional network/console capture via chrome.debugger (requires the "debugger" permission).
 // ponytail: keeps a small in-memory ring per tab; emits to backend via the provided sink.
 import { redactSensitiveData } from "@browserpilot/protocol";
+// Attachment bookkeeping lives in cdpInput — Chrome refuses a second attach from the same
+// extension, so trusted input and network capture MUST share one registry, not keep two.
+import { ensureAttached as attachTab, detach as detachTab } from "./cdpInput.js";
 
 interface NetEvent {
   url: string; method?: string; status?: number; requestUrl?: string; errorText?: string;
@@ -8,8 +11,6 @@ interface NetEvent {
   tabId: number; timestamp: string;
 }
 
-const PROTOCOL = "1.3";
-const attached = new Set<number>();
 const buffers = new Map<number, NetEvent[]>();
 const startTimes = new Map<string, number>();
 let emit: (e: NetEvent) => void = () => {};
@@ -37,14 +38,14 @@ chrome.debugger?.onEvent.addListener((source, method, params: any) => {
 });
 
 async function ensureAttached(tabId: number) {
-  if (attached.has(tabId)) return;
-  await chrome.debugger.attach({ tabId }, PROTOCOL);
-  attached.add(tabId);
+  if (!(await attachTab(tabId))) {
+    throw Object.assign(new Error("Could not attach the debugger to this tab (another debugger may be attached)."), { code: "PERMISSION_DENIED" });
+  }
 }
 
 export const debuggerHandlers: Record<string, (payload: any, tabId?: number) => Promise<unknown>> = {
   "debugger.attach": async (_p, tabId) => { await ensureAttached(need(tabId)); return { attached: tabId }; },
-  "debugger.detach": async (_p, tabId) => { const id = need(tabId); if (attached.has(id)) { await chrome.debugger.detach({ tabId: id }); attached.delete(id); } return { detached: id }; },
+  "debugger.detach": async (_p, tabId) => { const id = need(tabId); await detachTab(id); return { detached: id }; },
   "network.enable": async (_p, tabId) => { const id = need(tabId); await ensureAttached(id); await chrome.debugger.sendCommand({ tabId: id }, "Network.enable"); return { enabled: id }; },
   "network.disable": async (_p, tabId) => { const id = need(tabId); await chrome.debugger.sendCommand({ tabId: id }, "Network.disable"); return { disabled: id }; },
   "network.getRecent": async (_p, tabId) => ({ events: buffers.get(need(tabId)) ?? [] }),

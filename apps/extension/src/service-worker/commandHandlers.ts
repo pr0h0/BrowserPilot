@@ -1,8 +1,8 @@
 import { type Command, type CommandResponse, ALWAYS_ALLOWED } from "@browserpilot/protocol";
 import { tabHandlers, resolveTabId } from "./tabHandlers.js";
-import { captureVisible } from "./screenshotHandlers.js";
+import { captureVisible, viewportMetrics } from "./screenshotHandlers.js";
 import { debuggerHandlers } from "./debuggerHandlers.js";
-import { ensureAttached, cdpClick, cdpType, cdpDrag, cdpSetFiles } from "./cdpInput.js";
+import { ensureAttached, cdpClick, cdpHover, cdpType, cdpDrag, cdpSetFiles } from "./cdpInput.js";
 import { isTabEnabled } from "./storage.js";
 import { getSettings } from "../shared/browserApi.js";
 
@@ -59,12 +59,32 @@ function sendToContent(tabId: number, action: string, payload: unknown, timeoutM
   });
 }
 
+/** Recorded workflow steps per tab, keyed by tabId. Presence in the map == "recording".
+ *  Kept in the service worker so a recording spans navigations and page reloads. */
+export const recordings = new Map<number, unknown[]>();
+
+/** Desktop notification. The agent loop runs in the backend, so a run that pauses for approval
+ *  is otherwise invisible whenever the side panel is closed — which is most of the time. */
+async function notify(payload: any): Promise<unknown> {
+  // Enforced here rather than in the backend: the setting lives in extension storage, and this
+  // is the one place every notification passes through.
+  if (!(await getSettings()).notifications) return { notified: null, suppressed: true };
+  return new Promise((resolve) => {
+    chrome.notifications.create({
+      type: "basic", iconUrl: chrome.runtime.getURL("icons/icon128.png"),
+      title: String(payload?.title ?? "BrowserPilot"), message: String(payload?.message ?? "").slice(0, 300),
+      priority: payload?.urgent ? 2 : 0,
+    }, (id) => { void chrome.runtime.lastError; resolve({ notified: id ?? null }); });
+  });
+}
+
 export async function dispatchCommand(command: Command): Promise<CommandResponse> {
   const { id, type, payload, timeoutMs = 30_000 } = command;
   const tabId = command.target?.tabId;
 
   try {
     // 1. Tab management — always allowed.
+    if (type === "ui.notify") return ok(id, await notify(payload));
     if (type in tabHandlers) return ok(id, await tabHandlers[type](payload, tabId));
     if (type === "tabs.captureVisible") return ok(id, await captureVisible(payload, tabId));
 
@@ -79,6 +99,37 @@ export async function dispatchCommand(command: Command): Promise<CommandResponse
     const resolvedTab = await resolveTabId(tabId);
     if (!ALWAYS_ALLOWED.includes(type as any) && !isTabEnabled(resolvedTab)) {
       return fail(id, "TAB_NOT_ENABLED", `Control is not enabled for tab ${resolvedTab}. Enable it from the popup or side panel.`);
+    }
+
+    // Coordinate input (canvas, <video>, maps — targets with no DOM node to select). Coords are
+    // SCREENSHOT-IMAGE pixels: the model reads them off the picture it was shown, and we divide by
+    // the live devicePixelRatio to get the CSS px CDP wants. Skipping that scaling is the classic
+    // "every click lands at double the offset on a HiDPI screen" bug. CDP only — a synthetic event
+    // at a point is not what the caller asked for, so fail loudly instead of silently downgrading.
+    const pt = (payload ?? {}) as any;
+    if ((type === "page.click" || type === "page.hover") && pt.x != null && pt.y != null) {
+      if (!Number.isFinite(Number(pt.x)) || !Number.isFinite(Number(pt.y))) return fail(id, "INVALID_COMMAND", "x and y must be numbers.");
+      const dpr = (await viewportMetrics(resolvedTab))?.dpr ?? 1;
+      const x = Math.round(Number(pt.x) / dpr), y = Math.round(Number(pt.y) / dpr);
+      if (!(await ensureAttached(resolvedTab))) return fail(id, "PERMISSION_DENIED", "Coordinate clicking needs trusted input — enable it in BrowserPilot settings.");
+      if (type === "page.hover") { await cdpHover(resolvedTab, x, y); return ok(id, { hovered: { x: pt.x, y: pt.y }, cssPoint: { x, y }, dpr }); }
+      await cdpClick(resolvedTab, x, y);
+      return ok(id, { clicked: { x: pt.x, y: pt.y }, cssPoint: { x, y }, dpr, trusted: true });
+    }
+
+    // Workflow recording: the SW owns the step buffer; the content script only reports events.
+    if (type === "page.startRecorder") {
+      recordings.set(resolvedTab, []);
+      await sendToContent(resolvedTab, type, payload ?? {}, timeoutMs - 500);
+      const tab = await chrome.tabs.get(resolvedTab).catch(() => undefined);
+      if (tab?.url) recordings.get(resolvedTab)!.push({ type: "tabs.navigate", payload: { url: tab.url }, label: `go to ${tab.url}`, at: Date.now() });
+      return ok(id, { recording: true, tabId: resolvedTab });
+    }
+    if (type === "page.stopRecorder") {
+      const steps = recordings.get(resolvedTab) ?? [];
+      recordings.delete(resolvedTab);
+      await sendToContent(resolvedTab, type, payload ?? {}, timeoutMs - 500);
+      return ok(id, { recording: false, steps });
     }
 
     // Download / drag / file-upload — need the debugger (drag/upload) or the downloads API.
