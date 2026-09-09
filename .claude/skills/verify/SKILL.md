@@ -22,7 +22,7 @@ on a live form, console capture (main-world hook), screenshots, and the agent lo
 CHROME_BIN=/path/to/chrome-linux64/chrome ./e2e/run.sh
 ```
 Expect `ALL E2E CHECKS PASSED` (~40 checks): tab gate, live click/type, console capture,
-screenshots, agent auto/read-only/approve/reject, live streaming + Stop, sensitive-action floor,
+screenshots, coordinate canvas click/hover, agent auto/read-only/approve/reject, live streaming + Stop, sensitive-action floor,
 per-site block, multi-tab switch, **CDP trusted input, form_input, model override + token usage**,
 schedules + activity. Pieces: `test-pages.ts` (:8899), `scripted-ai.ts` (:9999 fake OpenAI, fixed
 tool calls per SCENARIO:* prompt; includes a `usage` block), `e2e.ts` (driver: REST + CDP on :9222).
@@ -32,6 +32,12 @@ where a developer's real browser may be connected. The driver points the test Ch
 at :9887 via a popup `saveSettings` (a SW can't `sendMessage` to itself) and targets **its own
 browserId** read from the SW (never `find(online)` — the backend may have several browsers). It
 also clears the `127.0.0.1` permission at startup for idempotency.
+
+Coordinate input (`click_at`/`hover_at` on a canvas) is checked on `/canvas.html`. Coords are
+SCREENSHOT-IMAGE pixels, divided by the live devicePixelRatio in `commandHandlers.ts`. At dpr 1
+that division is the identity, so it proves nothing — re-run the suite with
+`CHROME_EXTRA_FLAGS=--force-device-scale-factor=2` to actually exercise the scaling. `run.sh` uses
+`xvfb-run` when installed and falls back to `--headless=new` when it isn't.
 
 **Gotchas:** kill ALL chrome with `pkill -9 -f chrome-linux64/chrome` between runs (a lingering old
 instance serves stale extension code and reuses a browserId → baffling failures). `chrome.storage`

@@ -12,6 +12,10 @@ cd "$(dirname "$0")/.."
 # own service on 9999. Override with SAI_PORT.
 SAI_PORT="${SAI_PORT:-9998}"
 
+# The harness runs WITH auth on, the way a real deployment does — so a broken auth path fails
+# the suite instead of silently passing because the test instance was open.
+E2E_TOKEN="e2e-pairing-token"
+
 bun --filter @browserpilot/extension build
 
 fuser -k 9887/tcp 9222/tcp 8899/tcp "$SAI_PORT/tcp" 2>/dev/null || true
@@ -21,10 +25,19 @@ TESTDB=$(mktemp -d)/e2e.sqlite
 
 bun e2e/test-pages.ts & PAGES=$!
 SAI_PORT="$SAI_PORT" bun e2e/scripted-ai.ts & SAI=$!
-PORT=9887 DATABASE_URL="file:$TESTDB" SCREENSHOT_DIR="$(dirname "$TESTDB")/shots" \
+PORT=9887 PAIRING_TOKEN="$E2E_TOKEN" DATABASE_URL="file:$TESTDB" SCREENSHOT_DIR="$(dirname "$TESTDB")/shots" \
   AI_PROVIDER=openai OPENAI_API_KEY=fakekey OPENAI_BASE_URL="http://127.0.0.1:$SAI_PORT/v1" OPENAI_MODEL=scripted \
   bun apps/backend/src/index.ts & BACK=$!
-xvfb-run -a -s "-screen 0 1280x900x24" "$CHROME_BIN" \
+# Xvfb when it's installed; otherwise new-headless, which loads MV3 extensions just as well.
+if command -v xvfb-run >/dev/null 2>&1; then
+  LAUNCH=(xvfb-run -a -s "-screen 0 1280x900x24" "$CHROME_BIN")
+else
+  LAUNCH=("$CHROME_BIN" --headless=new --window-size=1280,900)
+fi
+# CHROME_EXTRA_FLAGS=--force-device-scale-factor=2 re-runs the whole suite at dpr 2, which is the
+# only way to catch a coordinate-scaling regression (at dpr 1 the scaling is the identity).
+read -r -a EXTRA <<< "${CHROME_EXTRA_FLAGS:-}"
+"${LAUNCH[@]}" ${EXTRA[@]+"${EXTRA[@]}"} \
   --no-sandbox --disable-gpu --no-first-run --no-default-browser-check \
   --user-data-dir="$PROFILE" --load-extension="$PWD/apps/extension/dist" \
   --remote-debugging-port=9222 about:blank & CHROME=$!
@@ -33,4 +46,4 @@ trap 'kill $PAGES $SAI $BACK $CHROME 2>/dev/null; rm -rf "$PROFILE" "$(dirname "
 echo "waiting for the test backend..."
 for _ in $(seq 1 30); do curl -s -m 2 http://127.0.0.1:9887/health >/dev/null 2>&1 && break; sleep 1; done
 
-E2E_API=http://127.0.0.1:9887 E2E_WS=ws://127.0.0.1:9887/ws E2E_SAI="http://127.0.0.1:$SAI_PORT" bun e2e/e2e.ts
+E2E_API=http://127.0.0.1:9887 E2E_WS=ws://127.0.0.1:9887/ws E2E_SAI="http://127.0.0.1:$SAI_PORT" E2E_TOKEN="$E2E_TOKEN" bun e2e/e2e.ts

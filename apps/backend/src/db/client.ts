@@ -40,6 +40,9 @@ CREATE TABLE IF NOT EXISTS schedules (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, browser_id TEXT NOT NULL, tab_id INTEGER, prompt TEXT NOT NULL,
   mode TEXT NOT NULL DEFAULT 'auto', interval_minutes INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
   last_run_at INTEGER, next_run_at INTEGER NOT NULL, last_status TEXT, created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS workflows (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, steps TEXT NOT NULL, created_at INTEGER NOT NULL,
+  last_run_at INTEGER, last_status TEXT);
 `);
 
 export const db = drizzle(sqlite, { schema });

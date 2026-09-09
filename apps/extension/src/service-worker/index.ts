@@ -1,7 +1,7 @@
 import type { UiRequest, UiResponse, ConnectionStatus } from "../shared/types.js";
 import { SocketClient } from "./socketClient.js";
 import { setNetworkSink } from "./debuggerHandlers.js";
-import { dispatchCommand } from "./commandHandlers.js";
+import { dispatchCommand, recordings } from "./commandHandlers.js";
 import { loadEnabledTabs, setTabEnabled, isTabEnabled, enabledTabs } from "./storage.js";
 import { getSettings, saveSettings } from "../shared/browserApi.js";
 
@@ -55,6 +55,18 @@ chrome.commands?.onCommand.addListener(async (command) => {
 });
 
 chrome.runtime.onMessage.addListener((msg: any, sender, sendResponse) => {
+  // --- workflow recording: steps accumulate here, not in the page, so a recording survives
+  // navigation (the content script is destroyed and rebuilt on every page load).
+  if (msg?.kind === "workflowStep") {
+    const tabId = sender.tab?.id;
+    if (tabId !== undefined && recordings.has(tabId)) recordings.get(tabId)!.push(msg.step);
+    return;
+  }
+  if (msg?.kind === "recorderQuery") {
+    sendResponse({ recording: sender.tab?.id !== undefined && recordings.has(sender.tab.id) });
+    return true;
+  }
+
   // --- content-script events (have a sender.tab) ---
   if (msg?.kind === "consoleEvent") {
     const tabId = sender.tab?.id ?? -1;

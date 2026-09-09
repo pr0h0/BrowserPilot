@@ -67,6 +67,15 @@ Bun.serve({
       if (userText.includes("SCENARIO:readonly")) {
         return toolCount === 0 ? Response.json(tc("click", { selector: "#greet" })) : Response.json(final("READONLY DONE"));
       }
+      // Policy: hover_at is allowed in every mode (it commits nothing), click_at is gated as an
+      // action. In read-only that means hover succeeds and the coordinate click is refused.
+      if (userText.includes("SCENARIO:hovergate")) {
+        switch (toolCount) {
+          case 0: return Response.json(tc("hover_at", { x: 200, y: 150 }));
+          case 1: return Response.json(tc("click_at", { x: 200, y: 150, label: "canvas target" }));
+          default: return Response.json(final("HOVERGATE DONE"));
+        }
+      }
       if (userText.includes("SCENARIO:approve")) {
         return toolCount === 0 ? Response.json(tc("type", { selector: "#q", text: "approved text" })) : Response.json(final("APPROVE DONE"));
       }

@@ -110,3 +110,13 @@ export const schedules = sqliteTable("schedules", {
   lastStatus: text("last_status"),
   createdAt: integer("created_at").notNull(),
 });
+
+/** Workflows recorded by demonstration in the browser, replayed step by step. */
+export const workflows = sqliteTable("workflows", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  steps: text("steps").notNull(),          // JSON array of { type, payload, label }
+  createdAt: integer("created_at").notNull(),
+  lastRunAt: integer("last_run_at"),
+  lastStatus: text("last_status"),
+});

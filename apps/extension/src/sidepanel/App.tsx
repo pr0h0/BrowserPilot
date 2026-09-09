@@ -9,9 +9,10 @@ import { SelectedElementPanel } from "./components/SelectedElementPanel.js";
 import { ConsolePanel } from "./components/ConsolePanel.js";
 import { SitesPanel } from "./components/SitesPanel.js";
 import { TasksPanel } from "./components/TasksPanel.js";
+import { WorkflowsPanel } from "./components/WorkflowsPanel.js";
 import { HistoryPanel } from "./components/HistoryPanel.js";
 
-type View = "chat" | "tools" | "console" | "activity" | "settings";
+type View = "chat" | "tools" | "workflows" | "console" | "activity" | "settings";
 const COLORS: Record<string, string> = { connected: "#2ecc71", connecting: "#f1c40f", disconnected: "#e74c3c" };
 
 export function App() {
@@ -56,6 +57,7 @@ export function App() {
     ["chat", "💬", "Chat"],
     ["tools", "🧰", "Tools", selected ? 1 : 0],
     ["console", "🐛", "Console", consoleEvents.length],
+    ["workflows", "⏺", "Flows"],
     ["activity", "📋", "Activity"],
     ["settings", "⚙️", "Settings"],
   ];
@@ -87,6 +89,7 @@ export function App() {
           <PageTools tabId={tab?.id} />
           <SelectedElementPanel element={selected} onAskAI={askWithElement} />
         </>}
+        {view === "workflows" && <WorkflowsPanel {...common} tabId={tab?.id} />}
         {view === "console" && <ConsolePanel events={consoleEvents} tabId={tab?.id} onClear={() => setConsoleEvents([])} />}
         {view === "activity" && <HistoryPanel {...common} />}
         {view === "settings" && <>

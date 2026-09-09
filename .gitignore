@@ -5,3 +5,6 @@ data/
 *.log
 *.tar
 .DS_Store
+
+# built extension bundle — produced by `bun run --filter @browserpilot/extension build`
+browserpilot-extension.zip

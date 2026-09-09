@@ -3,6 +3,7 @@ import * as ex from "./pageExtractors.js";
 import * as act from "./actionExecutor.js";
 import { startPicker, stopPicker, describeElement } from "./elementPicker.js";
 import { initConsoleCapture, getRecentConsole, clearRecentConsole } from "./consoleCapture.js";
+import { startRecorder, stopRecorder, isRecording, type RecordedStep } from "./recorder.js";
 
 let lastSelected: SelectedElement | null = null;
 
@@ -16,6 +17,19 @@ const alreadyLoaded = (window as any)[FLAG] === true;
 if (!alreadyLoaded) initConsoleCapture((event) => {
   chrome.runtime.sendMessage({ kind: "consoleEvent", event }).catch(() => {});
 });
+
+const sendStep = (step: RecordedStep) =>
+  void chrome.runtime.sendMessage({ kind: "workflowStep", step }).catch(() => {});
+
+// A recording that crosses a navigation gets a fresh content script, which knows nothing. Ask
+// the service worker (which does) whether this tab is mid-recording, and pick the thread back up.
+if (!alreadyLoaded) chrome.runtime.sendMessage({ kind: "recorderQuery" })
+  .then((res: any) => {
+    if (!res?.recording || isRecording()) return;
+    startRecorder(sendStep);
+    sendStep({ type: "tabs.navigate", payload: { url: location.href }, label: `go to ${location.href}`, at: Date.now() });
+  })
+  .catch(() => {});
 
 async function handle(type: string, payload: any): Promise<unknown> {
   switch (type) {
@@ -37,6 +51,9 @@ async function handle(type: string, payload: any): Promise<unknown> {
       );
       return { started: true };
     case "page.stopElementPicker": stopPicker(); return { stopped: true };
+
+    case "page.startRecorder": return startRecorder(sendStep);
+    case "page.stopRecorder": return stopRecorder();
 
     case "page.click": return act.click(payload.selector);
     case "page.type": return act.type(payload.selector, String(payload.text ?? ""), Boolean(payload.append));

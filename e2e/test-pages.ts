@@ -47,6 +47,23 @@ for(let r=0;r<3;r++)for(let c=0;c<3;c++){const d=document.createElement("div");d
   d.addEventListener("click",()=>{d.classList.add("revealed");d.textContent=d.dataset.value;});board.appendChild(d);}
 <\/script>`, { headers: { "content-type": "text/html" } });
     }
+    // A <canvas> with no DOM children: the only way to hit a target inside it is by coordinate.
+    // Records the CSS-viewport point of the last hover/click so the driver can assert that the
+    // dpr scaling landed the pointer exactly where it was asked to.
+    if (url.pathname === "/canvas.html") {
+      return new Response(`<!doctype html><title>Canvas</title>
+<style>body{margin:0}canvas{display:block}</style>
+<canvas id="c" width="400" height="300"></canvas>
+<div id="out"></div>
+<script>
+const c=document.getElementById("c"),g=c.getContext("2d"),out=document.getElementById("out");
+g.fillStyle="#ddd";g.fillRect(0,0,400,300);g.fillStyle="#333";g.fillRect(180,130,40,40);
+c.addEventListener("mousemove",e=>{out.dataset.hover="hover:"+Math.round(e.clientX)+","+Math.round(e.clientY);
+  g.fillStyle="#ddd";g.fillRect(0,0,400,300);g.fillStyle="#333";g.fillRect(180,130,40,40);
+  g.strokeStyle="#f00";g.strokeRect(e.offsetX-10,e.offsetY-10,20,20);out.textContent=out.dataset.hover;});
+c.addEventListener("click",e=>{out.textContent="click:"+Math.round(e.clientX)+","+Math.round(e.clientY)+" trusted:"+e.isTrusted;});
+<\/script>`, { headers: { "content-type": "text/html" } });
+    }
     return new Response("nope", { status: 404 });
   },
 });

@@ -4,6 +4,7 @@
 // (a developer's own browser may be connected there). Override with E2E_API / E2E_WS.
 const API = process.env.E2E_API ?? "http://127.0.0.1:9887";
 const WS = process.env.E2E_WS ?? "ws://127.0.0.1:9887/ws";
+const TOKEN = process.env.E2E_TOKEN ?? "";
 
 let failures = 0;
 const check = (name: string, cond: boolean, detail = "") => {
@@ -13,7 +14,10 @@ const check = (name: string, cond: boolean, detail = "") => {
 
 const list = async () => (await (await fetch("http://127.0.0.1:9222/json/list")).json()) as any[];
 const api = async (path: string, init?: RequestInit) =>
-  (await fetch(`${API}${path}`, { ...init, headers: { ...(init?.body != null ? { "content-type": "application/json" } : {}), ...(init?.headers as any) } })).json() as Promise<any>;
+  (await fetch(`${API}${path}`, { ...init, headers: {
+    ...(init?.body != null ? { "content-type": "application/json" } : {}),
+    ...(TOKEN ? { authorization: `Bearer ${TOKEN}` } : {}),
+    ...(init?.headers as any) } })).json() as Promise<any>;
 const cmd = (browserId: string, type: string, payload?: unknown, tabId?: number, timeoutMs?: number) =>
   api(`/api/browsers/${browserId}/commands`, { method: "POST", body: JSON.stringify({ type, target: tabId !== undefined ? { tabId } : {}, payload, timeoutMs }) });
 
@@ -60,11 +64,22 @@ for (let i = 0; i < 20; i++) { await Bun.sleep(200); if (await popup.eval(`!!chr
 
 // Point THIS test Chrome at the isolated test backend and read its own browserId — the backend
 // may have other browsers connected (a developer's real browser), so never use find(online).
-await popup.eval(`chrome.runtime.sendMessage({ kind: "saveSettings", settings: { backendUrl: "${WS}" } })`);
+// enableDebugger: the network-capture path is only reachable with it on, so exercise it here.
+await popup.eval(`chrome.runtime.sendMessage({ kind: "saveSettings", settings: { backendUrl: "${WS}", pairingToken: "${TOKEN}", enableDebugger: true } })`);
 const BID = await popup.eval(`chrome.storage.local.get("browserpilot:settings").then(r => r["browserpilot:settings"]?.browserId)`);
 let me: any;
 for (let i = 0; i < 25 && !me?.online; i++) { await Bun.sleep(1000); me = (await api("/api/browsers")).find((b: any) => b.id === BID); }
 check("this test browser is online in the isolated backend", Boolean(me?.online), BID);
+
+// The harness runs with auth on, so prove an unauthenticated caller is locked out of the same API.
+{
+  const bare = await fetch(`${API}/api/browsers`);
+  check("REST rejects an unauthenticated caller", bare.status === 401, String(bare.status));
+  const health = await fetch(`${API}/health`);
+  check("/health stays public", health.status === 200, String(health.status));
+  const leak = await health.json() as any;
+  check("/health leaks no configuration", Object.keys(leak).sort().join(",") === "ok,service,time", Object.keys(leak).join(","));
+}
 
 // Clean slate: drop any leftover permission for the test host so reruns are idempotent.
 await api("/api/permissions/127.0.0.1", { method: "DELETE" }).catch(() => {});
@@ -260,6 +275,106 @@ check("type uses CDP trusted input", ttype.ok && ttype.result?.trusted === true,
 await cmd(BID, "page.click", { selector: "#greet" }, TAB);
 const tout = await cmd(BID, "page.extractText", {}, TAB);
 check("trusted type actually landed in the field", tout.ok && tout.result.text.includes("Hello, trusted"));
+
+// ---------- 12b. coordinate input on a canvas (hover → screenshot → click) ----------
+{
+  const cv = await cmd(BID, "tabs.open", { url: "http://127.0.0.1:8899/canvas.html", active: true });
+  const CTAB = cv.result.id as number;
+  await popup.eval(`chrome.runtime.sendMessage({ kind: "setTabEnabled", tabId: ${CTAB}, enabled: true })`);
+  await Bun.sleep(1200);
+
+  const cshot = await cmd(BID, "tabs.captureVisible", {}, CTAB);
+  const dpr = cshot.result?.viewport?.dpr ?? 0;
+  check("screenshot reports the viewport + dpr so coords have a known space", dpr > 0 && cshot.result?.imageWidth > 0,
+    JSON.stringify(cshot.result?.viewport));
+
+  // Target the dark square painted at canvas 180..220 x 130..170 — a region with no DOM node.
+  // Coordinates are image pixels, so scale the CSS point we expect the page to see by dpr.
+  const [cssX, cssY] = [200, 150];
+  const hv = await cmd(BID, "page.hover", { x: cssX * dpr, y: cssY * dpr }, CTAB, 15000);
+  await Bun.sleep(300);
+  const hout = await cmd(BID, "page.extractText", {}, CTAB);
+  check("hover_at moves the real pointer to the requested point (dpr-scaled)",
+    hv.ok && hout.ok && hout.result.text.includes(`hover:${cssX},${cssY}`), hv.ok ? hout.result?.text?.slice(0, 40) : JSON.stringify(hv.error));
+
+  const ck = await cmd(BID, "page.click", { x: cssX * dpr, y: cssY * dpr }, CTAB, 15000);
+  await Bun.sleep(300);
+  const cout = await cmd(BID, "page.extractText", {}, CTAB);
+  check("click_at clicks the canvas at the exact point, trusted",
+    ck.ok && cout.ok && cout.result.text.includes(`click:${cssX},${cssY} trusted:true`), ck.ok ? cout.result?.text?.slice(0, 40) : JSON.stringify(ck.error));
+  check("coordinate click reports the CSS point it scaled to", ck.result?.cssPoint?.x === cssX && ck.result?.cssPoint?.y === cssY, JSON.stringify(ck.result?.cssPoint));
+
+  const bad = await cmd(BID, "page.click", { x: "nope", y: 10 }, CTAB);
+  check("coordinate click rejects non-numeric coords", !bad.ok && bad.error?.code === "INVALID_COMMAND", bad.error?.code);
+
+  // Policy: allow the look, gate the commit — hover_at runs even in read-only, click_at does not.
+  const hg = await runAgent("SCENARIO:hovergate", "read", CTAB);
+  const hgHover = hg.transcript.find((t: any) => t.tool === "hover_at");
+  const hgClick = hg.transcript.find((t: any) => t.tool === "click_at");
+  check("read-only: hover_at is allowed", Boolean(hgHover?.ok), hgHover?.resultSummary);
+  check("read-only: click_at is still blocked", Boolean(hgClick) && !hgClick.ok && /read-only/i.test(hgClick.resultSummary), hgClick?.resultSummary);
+  const hgOut = await cmd(BID, "page.extractText", {}, CTAB);
+  check("the gated click never reached the page (last event is still the hover)",
+    hgOut.ok && hgOut.result.text.startsWith("hover:"), hgOut.result?.text?.slice(0, 40));
+  await cmd(BID, "tabs.close", {}, CTAB);
+}
+
+// ---------- 12c. workflow recording: demonstrate → save → replay ----------
+{
+  await cmd(BID, "tabs.navigate", { url: "http://127.0.0.1:8899/form.html" }, TAB);
+  await Bun.sleep(1200);
+  const rec = await cmd(BID, "page.startRecorder", {}, TAB);
+  check("recorder starts", rec.ok && rec.result?.recording === true, JSON.stringify(rec.result ?? rec.error));
+
+  // Drive the page the way a human would: real trusted input, not the recorder's own API.
+  await cmd(BID, "page.type", { selector: "#q", text: "recorded value" }, TAB);
+  await cmd(BID, "page.click", { selector: "#greet" }, TAB);
+  await Bun.sleep(400);
+
+  const stopped = await cmd(BID, "page.stopRecorder", {}, TAB);
+  const steps = stopped.result?.steps ?? [];
+  check("recorder captured the typing and the click", stopped.ok && steps.some((s: any) => s.type === "page.type") && steps.some((s: any) => s.type === "page.click"),
+    steps.map((s: any) => s.type).join(" "));
+  check("recorded steps carry usable selectors", steps.every((s: any) => s.type === "tabs.navigate" || typeof s.payload?.selector === "string"),
+    JSON.stringify(steps.slice(0, 3)));
+
+  // Save it, then replay against a freshly reloaded page and check the effect landed.
+  const saved = await api("/api/workflows", { method: "POST", body: JSON.stringify({ name: "e2e-flow", steps: steps.filter((s: any) => s.type !== "tabs.navigate") }) });
+  check("workflow saved to the backend", saved.ok && saved.workflow?.id, saved.workflow?.id);
+
+  await cmd(BID, "tabs.reload", {}, TAB); await Bun.sleep(1200);
+  const replay = await api(`/api/workflows/${saved.workflow.id}/run`, { method: "POST", body: JSON.stringify({ browserId: BID, tabId: TAB }) });
+  await Bun.sleep(400);
+  const after = await cmd(BID, "page.extractText", {}, TAB);
+  check("replaying the workflow reproduces the result", replay.ok && after.ok && after.result.text.includes("Hello, recorded value"),
+    after.result?.text?.slice(0, 50));
+
+  const listed = await api("/api/workflows");
+  check("saved workflow appears in the list with a run status", listed.some((w: any) => w.id === saved.workflow.id && w.lastStatus === "ok"));
+  await api(`/api/workflows/${saved.workflow.id}`, { method: "DELETE" });
+}
+
+// ---------- 12d. network tool + notification command ----------
+{
+  const notified = await cmd(BID, "ui.notify", { title: "E2E", message: "notification check" }, TAB);
+  check("ui.notify reaches the extension", notified.ok && notified.result?.notified, JSON.stringify(notified.result ?? notified.error));
+
+  // The toggle is enforced in the extension, so a disabled setting must swallow the command.
+  await popup.eval(`chrome.runtime.sendMessage({ kind: "saveSettings", settings: { notifications: false } })`);
+  const muted = await cmd(BID, "ui.notify", { title: "E2E", message: "should be suppressed" }, TAB);
+  check("notifications setting off suppresses the notification", muted.ok && muted.result?.suppressed === true, JSON.stringify(muted.result));
+  await popup.eval(`chrome.runtime.sendMessage({ kind: "saveSettings", settings: { notifications: true } })`);
+
+  // Network capture needs the debugger feature enabled; without it the agent gets a clear hint.
+  // Trusted input has already attached chrome.debugger to this tab; network capture must share
+  // that attachment rather than attempt a second one (Chrome refuses, and used to 500 here).
+  const net = await cmd(BID, "network.enable", {}, TAB);
+  check("network capture enables on a tab already using trusted input", net.ok, JSON.stringify(net.result ?? net.error));
+  await cmd(BID, "tabs.reload", {}, TAB); await Bun.sleep(1800);
+  const recent = await cmd(BID, "network.getRecent", {}, TAB);
+  check("network.getRecent returns captured requests", recent.ok && Array.isArray(recent.result?.events) && recent.result.events.length > 0,
+    `${recent.result?.events?.length ?? 0} events`);
+}
 
 // ---------- 13. form_input: checkbox + select via set_field ----------
 await cmd(BID, "tabs.reload", {}, TAB); await Bun.sleep(1000);
