@@ -78,3 +78,49 @@ export function classifyActionRisk(input: { tool: string; label?: string; url?: 
   if (m) return { sensitive: true, reason: `matches sensitive action keyword "${m[0]}"` };
   return { sensitive: false };
 }
+
+
+// ---------- hard floor: actions that never run unattended ----------
+
+// Distinct from SENSITIVE_TEXT above, which only *raises* a prompt in approve mode. These
+// categories are never auto-approved — not by autonomous mode, not by an "always allow" site,
+// not by a scheduled run. A self-hosted tool should still let its owner do these things, so the
+// floor is "a human must say yes each time", not a refusal.
+const PROHIBITED: Array<[string, RegExp]> = [
+  ["payment", /\b(pay|purchase|checkout|place order|complete order|billing|card number|cvv|cvc|expiry)\b/i],
+  ["account-creation", /\b(create|register|sign ?up for)\b[^.]{0,20}\b(account|profile)\b/i],
+  ["identity", /\b(ssn|social security|passport|driver'?s licen[cs]e|national id|tax id)\b/i],
+  ["irreversible", /\b(permanently delete|delete forever|wipe|erase all|factory reset|close account)\b/i],
+];
+
+/** Categories that must never run without a human in the loop, whatever the mode says. */
+export function classifyProhibited(input: { label?: string; text?: string; url?: string }): { prohibited: boolean; reason?: string } {
+  const hay = `${input.label ?? ""} ${input.text ?? ""} ${input.url ?? ""}`;
+  for (const [name, re] of PROHIBITED) if (re.test(hay)) return { prohibited: true, reason: name };
+  return { prohibited: false };
+}
+
+// ---------- sensitive input ----------
+
+const SSN = /\b\d{3}-\d{2}-\d{4}\b/;
+const CARDISH = /\b(?:\d[ -]?){13,19}\b/;
+
+/** Luhn check — keeps order numbers and long digit strings from tripping the card guard. */
+function luhn(digits: string): boolean {
+  let sum = 0, alt = false;
+  for (let i = digits.length - 1; i >= 0; i--) {
+    let d = digits.charCodeAt(i) - 48;
+    if (alt) { d *= 2; if (d > 9) d -= 9; }
+    sum += d; alt = !alt;
+  }
+  return digits.length >= 13 && sum % 10 === 0;
+}
+
+/** Detect card numbers / SSNs in text the agent is about to type. Unlike a password field, these
+ *  arrive as ordinary text into ordinary inputs, so the input's type tells you nothing. */
+export function detectSensitiveInput(text: string): { flagged: boolean; kind?: string } {
+  if (SSN.test(text)) return { flagged: true, kind: "SSN" };
+  const m = CARDISH.exec(text);
+  if (m && luhn(m[0].replace(/[ -]/g, ""))) return { flagged: true, kind: "card number" };
+  return { flagged: false };
+}

@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { domainOf, domainMatches, detectInjection, wrapUntrusted, classifyActionRisk, DEFAULT_BLOCKED_SITES } from "./safety.js";
+import { domainOf, domainMatches, detectInjection, wrapUntrusted, classifyActionRisk, classifyProhibited, detectSensitiveInput, DEFAULT_BLOCKED_SITES } from "./safety.js";
 
 describe("domain helpers", () => {
   test("domainOf extracts hostname, lowercased, no port", () => {
@@ -70,5 +70,30 @@ describe("default blocklist", () => {
   test("includes known auth/banking hosts", () => {
     expect(DEFAULT_BLOCKED_SITES).toContain("accounts.google.com");
     expect(DEFAULT_BLOCKED_SITES.some((d) => domainMatches("login.accounts.google.com", d))).toBe(true);
+  });
+});
+
+describe("classifyProhibited", () => {
+  test("flags payment, identity and irreversible actions", () => {
+    expect(classifyProhibited({ label: "Complete order" }).prohibited).toBe(true);
+    expect(classifyProhibited({ label: "Permanently delete my data" }).reason).toBe("irreversible");
+    expect(classifyProhibited({ text: "my SSN is on file" }).reason).toBe("identity");
+  });
+  test("leaves ordinary actions alone", () => {
+    expect(classifyProhibited({ label: "Search" }).prohibited).toBe(false);
+    expect(classifyProhibited({ label: "Next page" }).prohibited).toBe(false);
+  });
+});
+
+describe("detectSensitiveInput", () => {
+  test("catches a Luhn-valid card number and an SSN", () => {
+    expect(detectSensitiveInput("4242424242424242").kind).toBe("card number");
+    expect(detectSensitiveInput("pay with 4242 4242 4242 4242 today").kind).toBe("card number");
+    expect(detectSensitiveInput("123-45-6789").kind).toBe("SSN");
+  });
+  test("does not trip on long non-card digit strings", () => {
+    // order numbers, tracking ids: right length, wrong checksum
+    expect(detectSensitiveInput("1234567890123456").flagged).toBe(false);
+    expect(detectSensitiveInput("order 99887766554433").flagged).toBe(false);
   });
 });

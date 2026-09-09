@@ -1,7 +1,7 @@
 import type {
   AgentRun, AgentMode, AgentTranscriptItem, AgentEvent, AgentStatus, AgentEventsResponse, AgentAction,
 } from "@browserpilot/protocol";
-import { classifyActionRisk, domainOf, wrapUntrusted } from "@browserpilot/protocol";
+import { classifyActionRisk, classifyProhibited, detectSensitiveInput, detectInjection, domainOf, wrapUntrusted } from "@browserpilot/protocol";
 import { config } from "../config.js";
 import { id } from "../util/ids.js";
 import { executeCommand } from "./commandService.js";
@@ -43,6 +43,21 @@ Acting — be efficient:
 - After navigate (or a navigating click) the page is new: wait_for a selector, then list_interactive.
 - Work across tabs with list_tabs + switch_tab when the task needs more than one page.
 - Use screenshot when text is ambiguous (layout, colors, images); the image arrives next message.
+
+Canvas / no-DOM targets (games, maps, charts, drawing tools, <video> controls):
+- When list_interactive/find return nothing for what you can plainly SEE, the target is painted
+  pixels, not an element. Use screenshot → hover_at(x,y) → screenshot → click_at(x,y).
+- x/y are pixels in the SCREENSHOT image you were shown, origin top-left. The screenshot result
+  reports imageWidth/imageHeight — read coordinates in that space, not in some other scale.
+- hover_at moves the real pointer WITHOUT clicking. Take a screenshot after it and look for the
+  page's own response (a highlighted cell, a tooltip, a cursor change). That highlight — not your
+  own estimate — tells you whether you are on target; if it is off, nudge and hover again.
+- Correct at most 2-3 times. If the page shows no hover feedback at all, skip straight to click_at
+  and verify with a screenshot afterwards. If you still cannot hit it, say so instead of flailing.
+- Prefer selectors whenever an element exists: they survive scrolling, resizing and re-layout.
+  Coordinates go stale the moment anything moves, so re-screenshot after scrolling or navigating.
+- get_console shows the symptom; get_network shows the failing request behind it (status, URL,
+  timing). When a page misbehaves, read both before guessing.
 - If a tool returns an error with a "hint", follow the hint (usually: re-read the page) instead of retrying blindly.
 
 When finished (or stuck), briefly tell the user what you did or what you need.`;
@@ -52,11 +67,14 @@ const TOOL_TO_COMMAND: Record<string, { type: string; payload?: (a: any) => unkn
   extract_text: { type: "page.extractText", payload: () => ({ maxChars: 8000 }) },
   get_selected_element: { type: "page.getSelectedElement" },
   get_console: { type: "console.getRecent" },
+  get_network: { type: "network.getRecent" },
   wait_for: { type: "page.waitForSelector", payload: (a) => ({ selector: a.selector, timeoutMs: Math.min(Number(a.timeoutMs ?? 10_000), 30_000) }) },
   scroll: { type: "page.scroll", payload: (a) => ({ selector: a.selector, toBottom: a.toBottom }) },
   screenshot: { type: "tabs.captureVisible" },
   list_tabs: { type: "tabs.list" },
   click: { type: "page.click", payload: (a) => ({ selector: a.selector }) },
+  click_at: { type: "page.click", payload: (a) => ({ x: a.x, y: a.y }) },
+  hover_at: { type: "page.hover", payload: (a) => ({ x: a.x, y: a.y }) },
   type: { type: "page.type", payload: (a) => ({ selector: a.selector, text: a.text }) },
   press_key: { type: "page.pressKey", payload: (a) => ({ selector: a.selector, key: a.key }) },
   navigate: { type: "tabs.navigate", payload: (a) => ({ url: a.url }) },
@@ -66,8 +84,8 @@ const TOOL_TO_COMMAND: Record<string, { type: string; payload?: (a: any) => unkn
   download: { type: "downloads.download", payload: (a) => ({ url: a.url, filename: a.filename }) },
   // switch_tab is handled specially (mutates session), not dispatched directly.
 };
-const READ_TOOLS = ["list_interactive", "find", "extract_text", "get_selected_element", "get_console", "wait_for", "scroll", "screenshot", "list_tabs"];
-const ACTION_TOOLS = ["click", "type", "press_key", "navigate", "switch_tab", "set_field", "drag", "upload_file", "download"];
+const READ_TOOLS = ["list_interactive", "find", "extract_text", "get_selected_element", "get_console", "get_network", "wait_for", "scroll", "screenshot", "list_tabs", "hover_at"];
+const ACTION_TOOLS = ["click", "click_at", "type", "press_key", "navigate", "switch_tab", "set_field", "drag", "upload_file", "download"];
 // File actions always need human approval (exfiltration / untrusted-download risk), even in auto.
 const FILE_ACTIONS = new Set(["upload_file", "download"]);
 // Same-page actions whose result auto-includes the UPDATED interactive elements, so the model
@@ -80,11 +98,14 @@ const TOOL_SCHEMAS: Record<string, { description: string; params: object }> = {
   extract_text: { description: "Get the visible text of the current page.", params: { type: "object", properties: {} } },
   get_selected_element: { description: "Get the element the user picked with the element picker, if any.", params: { type: "object", properties: {} } },
   get_console: { description: "Get recent console errors and warnings captured on the page.", params: { type: "object", properties: {} } },
+  get_network: { description: "Get recent network requests for the page (URL, status, timing, redacted headers) — use it to find the failing request behind a broken page, e.g. a 401 or 500 the console only hints at. Capture starts when first called, so if the list is empty, reload the page and call again.", params: { type: "object", properties: {} } },
   wait_for: { description: "Wait until a CSS selector exists (use after navigation or a page-changing click).", params: { type: "object", properties: { selector: { type: "string" }, timeoutMs: { type: "number" } }, required: ["selector"] } },
   scroll: { description: "Scroll an element into view (selector) or to the bottom of the page (toBottom).", params: { type: "object", properties: { selector: { type: "string" }, toBottom: { type: "boolean" } } } },
   screenshot: { description: "Capture the visible tab; the image is attached to the next message.", params: { type: "object", properties: {} } },
   list_tabs: { description: "List all open tabs (id, url, title) so you can switch between them.", params: { type: "object", properties: {} } },
   click: { description: "Click an element by exact CSS selector (from list_interactive).", params: { type: "object", properties: { selector: { type: "string" } }, required: ["selector"] } },
+  click_at: { description: "Click at a pixel coordinate in the SCREENSHOT image (origin top-left). Use ONLY for things with no DOM element to select — canvas games, maps, charts, video controls. Pass 'label' describing what you believe you are clicking. Prefer click(selector) whenever an element exists; take a screenshot afterwards to confirm the click landed.", params: { type: "object", properties: { x: { type: "number" }, y: { type: "number" }, label: { type: "string" } }, required: ["x", "y"] } },
+  hover_at: { description: "Move the mouse to a pixel coordinate in the SCREENSHOT image WITHOUT clicking, so the page renders its own hover feedback (highlighted cell, tooltip). Screenshot afterwards: the highlight tells you whether you are on target before you commit to click_at.", params: { type: "object", properties: { x: { type: "number" }, y: { type: "number" } }, required: ["x", "y"] } },
   type: { description: "Type text into an input/textarea by exact CSS selector. REPLACES the current value.", params: { type: "object", properties: { selector: { type: "string" }, text: { type: "string" } }, required: ["selector", "text"] } },
   press_key: { description: "Press a key (e.g. Enter) on an element or the focused element. Enter submits the form.", params: { type: "object", properties: { selector: { type: "string" }, key: { type: "string" } }, required: ["key"] } },
   navigate: { description: "Navigate the current tab to a URL.", params: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
@@ -96,6 +117,9 @@ const TOOL_SCHEMAS: Record<string, { description: string; params: object }> = {
 };
 
 interface ToolCall { id: string; name: string; args: Record<string, unknown> }
+/** Set when the CURRENT page's content tripped the injection detector. Cleared on navigation.
+ *  A flagged page downgrades autonomous mode to ask-first: the detector's warning is addressed
+ *  to the model, and the model is exactly what a successful injection has already subverted. */
 interface Session {
   provider: string; model: string; apiKey: string; baseUrl: string;
   system: string; messages: any[]; mode: AgentMode;
@@ -106,6 +130,8 @@ interface Session {
   pending?: ToolCall[]; iterations: number; maxSteps: number; createdAt: number;
   pendingImages: string[];
   elementLabels: Map<string, string>;         // selector → visible text, for risk classification
+  injectionFlagged?: string;                  // reason, when the current page tripped the detector
+  networkEnabled?: boolean;                   // CDP network capture turned on for this run
   usage: { promptTokens: number; completionTokens: number };
   steer: string[];                            // user messages sent mid-run, injected before the next turn
   abort?: AbortController;                     // cancels the in-flight LLM request when the user stops
@@ -113,8 +139,19 @@ interface Session {
 const sessions = new Map<string, Session>();
 const DEFAULT_MAX_STEPS = 100; // per-run turn ceiling when the client doesn't set one; 0 = unlimited
 
+// hover_at is a read tool in every mode, read-only included: moving the pointer commits nothing,
+// and the hover feedback it produces is how the model checks its aim before click_at — which stays
+// gated as an action. Allow the look, gate the commit.
 const toolNames = (mode: AgentMode) => (mode === "read" ? READ_TOOLS : [...READ_TOOLS, ...ACTION_TOOLS]);
 const emit = (s: Session, ev: AgentEvent) => { s.events.push(ev); };
+
+/** Best-effort desktop notification via the extension. The run must never fail because a
+ *  notification did — headless (scheduled) runs skip it, nobody is watching those live. */
+function notifyUser(s: Session, title: string, message: string, urgent = false) {
+  if (s.headless || !registry.isOnline(s.browserId)) return;
+  executeCommand(s.browserId, { type: "ui.notify" as any, payload: { title, message, urgent } })
+    .catch(() => { /* notifications are a convenience, never a dependency */ });
+}
 
 /** Start a run in the background; returns immediately with the runId. Poll /api/agent/events. */
 export async function agentRun(req: AgentRun & { headless?: boolean }): Promise<{ runId: string; status: AgentStatus }> {
@@ -249,6 +286,7 @@ async function drive(runId: string): Promise<void> {
         s.status = "awaiting_approval";
         const actions: AgentAction[] = out.toolCalls.filter((c) => ACTION_TOOLS.includes(c.name)).map((c) => ({ name: c.name, args: c.args }));
         emit(s, { type: "awaiting_approval", assistantText: out.text, pendingActions: actions });
+        notifyUser(s, "BrowserPilot needs approval", actions.map((a) => a.name).join(", ") + " — open the side panel to approve.", true);
         return;
       }
 
@@ -277,6 +315,9 @@ async function drive(runId: string): Promise<void> {
 function finish(s: Session, answer: string) {
   s.status = "done";
   emit(s, { type: "done", answer });
+  // Only for runs long enough that you plausibly walked away. A notification for the 3-second
+  // question you just typed, while staring at the panel, is noise.
+  if (Date.now() - s.createdAt > 30_000) notifyUser(s, "BrowserPilot finished", answer.slice(0, 200) || "Run complete.");
   audit("agent:done", s.browserId, { answer: answer.slice(0, 200), steps: s.transcript.length });
 }
 
@@ -305,6 +346,18 @@ function decideAction(s: Session, call: ToolCall): "run" | "approve" | "refuse" 
   // File upload/download always require human approval (exfiltration / untrusted-download risk).
   if (FILE_ACTIONS.has(call.name)) return s.headless ? "refuse" : "approve";
 
+  // Hard floor: payments, account creation, identity data and irreversible deletes never run
+  // unattended — autonomous mode and "always allow" do not lift this.
+  const banned = classifyProhibited({ label: labelFor(s, call), text: String(call.args.text ?? ""), url: String(call.args.url ?? "") });
+  if (banned.prohibited) return s.headless ? "refuse" : "approve";
+
+  // Typing a card number or SSN is refused outright, in every mode — there is no legitimate
+  // reason for the agent to originate one, and approving it once should not make it routine.
+  if ((call.name === "type" || call.name === "set_field") && detectSensitiveInput(String(call.args.text ?? call.args.value ?? "")).flagged) return "refuse";
+
+  // A page whose content tripped the injection detector loses autonomous privileges.
+  if (s.injectionFlagged) return s.headless ? "refuse" : "approve";
+
   const risk = classifyActionRisk({ tool: call.name, label: labelFor(s, call), url: String(call.args.url ?? "") });
   if (risk.sensitive) return s.headless ? "refuse" : "approve";
 
@@ -317,6 +370,11 @@ function refuseNote(s: Session, call: ToolCall): string {
   if (s.mode === "read") return "Read-only mode: actions are disabled.";
   const targetDomain = call.name === "navigate" ? domainOf(String(call.args.url ?? "")) : s.domain;
   if (getSiteMode(targetDomain) === "blocked") return `Blocked: ${targetDomain} is on the never-act list.`;
+  const sens = detectSensitiveInput(String(call.args.text ?? call.args.value ?? ""));
+  if (sens.flagged) return `Refused: will not type a ${sens.kind}.`;
+  const banned = classifyProhibited({ label: labelFor(s, call), text: String(call.args.text ?? ""), url: String(call.args.url ?? "") });
+  if (banned.prohibited && s.headless) return `Refused in scheduled run: ${banned.reason} actions need a human to approve.`;
+  if (s.injectionFlagged && s.headless) return "Refused in scheduled run: this page's content looks like a prompt-injection attempt.";
   const risk = classifyActionRisk({ tool: call.name, label: labelFor(s, call), url: String(call.args.url ?? "") });
   if (risk.sensitive && s.headless) return `Refused in scheduled run: sensitive action (${risk.reason}) needs a human to approve.`;
   return "Refused by policy.";
@@ -324,6 +382,9 @@ function refuseNote(s: Session, call: ToolCall): string {
 
 const labelFor = (s: Session, call: ToolCall): string => {
   if (call.name === "click" || call.name === "press_key") return s.elementLabels.get(String(call.args.selector)) ?? String(call.args.selector ?? "");
+  // click_at has no DOM node, so no page text to classify — fall back to the model's own stated
+  // intent. Weaker than a page-derived label (self-reported), but it is the only signal there is.
+  if (call.name === "click_at") return String(call.args.label ?? "");
   if (call.name === "type") return `${call.args.text ?? ""} ${s.elementLabels.get(String(call.args.selector)) ?? ""}`;
   return "";
 };
@@ -381,6 +442,18 @@ async function runTool(s: Session, call: ToolCall): Promise<{ ok: boolean; str: 
 
   const map = TOOL_TO_COMMAND[call.name];
   if (!map) return { ok: false, str: JSON.stringify({ error: `unknown tool ${call.name}` }), summary: "unknown tool" };
+
+  // Network capture is off until something turns it on, and it only records from that moment.
+  // Enable on first read so the tool works without the model knowing about the plumbing.
+  if (call.name === "get_network" && !s.networkEnabled) {
+    const en = await executeCommand(s.browserId, { type: "network.enable" as any, target: { tabId: s.tabId } });
+    if (!en.response.ok) {
+      const msg = en.response.error?.message ?? "could not enable network capture";
+      return { ok: false, str: JSON.stringify({ error: en.response.error?.code, message: msg,
+        hint: "Network capture needs the debugger feature — the user must enable it in BrowserPilot settings." }), summary: `get_network: ${msg}`.slice(0, 120) };
+    }
+    s.networkEnabled = true;
+  }
   const payload = map.payload ? map.payload(call.args) : undefined;
   const { response } = await executeCommand(s.browserId, { type: map.type as any, target: { tabId: s.tabId }, payload });
   if (!response.ok) {
@@ -393,12 +466,12 @@ async function runTool(s: Session, call: ToolCall): Promise<{ ok: boolean; str: 
   }
 
   // Keep the current domain in sync after navigation.
-  if (call.name === "navigate") s.domain = domainOf(String(call.args.url ?? "")) || s.domain;
+  if (call.name === "navigate") { s.domain = domainOf(String(call.args.url ?? "")) || s.domain; s.injectionFlagged = undefined; }
 
   if (call.name === "screenshot") {
-    const r = response.result as { dataUrl?: string; url?: string; title?: string };
+    const r = response.result as { dataUrl?: string; url?: string; title?: string; imageWidth?: number; imageHeight?: number };
     const image = typeof r?.dataUrl === "string" ? r.dataUrl : undefined;
-    return { ok: true, str: JSON.stringify({ captured: Boolean(image), url: r?.url, title: r?.title }), summary: "screenshot captured", image };
+    return { ok: true, str: JSON.stringify({ captured: Boolean(image), url: r?.url, title: r?.title, imageWidth: r?.imageWidth, imageHeight: r?.imageHeight }), summary: "screenshot captured", image };
   }
 
   if (call.name === "list_interactive") {
@@ -418,9 +491,19 @@ async function runTool(s: Session, call: ToolCall): Promise<{ ok: boolean; str: 
   const raw = JSON.stringify(resultObj);
   const clipped = raw.length > limit ? raw.slice(0, limit) + '…","_truncated":true}' : raw;
   // Fence page-derived content so the model treats it as data (prompt-injection defense).
-  const untrusted = ["list_interactive", "extract_text", "get_selected_element", "get_console"].includes(call.name) || resultObj.page !== undefined;
+  const untrusted = ["list_interactive", "extract_text", "get_selected_element", "get_console", "get_network"].includes(call.name) || resultObj.page !== undefined;
   const str = untrusted ? wrapUntrusted(call.name, clipped) : clipped;
+  // wrapUntrusted warns the model; this makes the same signal actionable in decideAction.
+  if (untrusted) {
+    const det = detectInjection(clipped);
+    if (det.flagged) {
+      s.injectionFlagged = det.matches.join(", ");
+      emit(s, { type: "status", note: `⚠ Possible prompt injection on this page (${s.injectionFlagged}). Actions now need your approval.` });
+    }
+  }
   const summary = call.name === "click" ? `clicked ${call.args.selector}`
+    : call.name === "click_at" ? `clicked (${call.args.x},${call.args.y})${call.args.label ? ` — ${call.args.label}` : ""}`
+    : call.name === "hover_at" ? `hovered (${call.args.x},${call.args.y})`
     : call.name === "type" ? `typed into ${call.args.selector}`
     : call.name === "navigate" ? `navigated to ${call.args.url}`
     : `${call.name} ok`;
@@ -530,7 +613,7 @@ async function openaiTurn(s: Session): Promise<{ text: string; toolCalls: ToolCa
   const tools = toolNames(s.mode).map((n) => ({ type: "function", function: { name: n, description: TOOL_SCHEMAS[n].description, parameters: TOOL_SCHEMAS[n].params } }));
   const url = `${s.baseUrl.replace(/\/$/, "")}/chat/completions`;
   const headers = { "content-type": "application/json", authorization: `Bearer ${s.apiKey}` };
-  const body = (msgs: any[]) => JSON.stringify({ model: s.model, messages: [{ role: "system", content: s.system }, ...msgs], tools, tool_choice: "auto", temperature: 0.2 });
+  const body = (msgs: any[]) => JSON.stringify({ model: s.model, messages: [{ role: "system", content: s.system }, ...msgs], tools, tool_choice: "auto", temperature: 0.2, max_tokens: config.ai.maxTokens });
 
   let res = await postWithRetry(url, headers, body(s.messages), s.abort?.signal);
   if (!res.ok) {
@@ -555,12 +638,20 @@ async function anthropicTurn(s: Session): Promise<{ text: string; toolCalls: Too
   const res = await postWithRetry(
     `${root.replace(/\/$/, "")}/v1/messages`,
     { "content-type": "application/json", "x-api-key": s.apiKey, "anthropic-version": "2023-06-01" },
-    JSON.stringify({ model: s.model, max_tokens: 1024, system: s.system, tools, messages: s.messages }),
+    // cache_control on the (large, static) system prompt: the tools + system prefix is re-sent
+    // every turn of every run, so cache hits pay for themselves immediately. Verify with
+    // usage.cache_read_input_tokens — a persistent zero means something upstream is varying.
+    JSON.stringify({ model: s.model, max_tokens: config.ai.maxTokens,
+      system: [{ type: "text", text: s.system, cache_control: { type: "ephemeral" } }],
+      tools, messages: s.messages }),
     s.abort?.signal,
   );
   if (!res.ok) throw new AiError("AI_REQUEST_FAILED", `${res.status}: ${await res.text()}`);
   const data = await res.json() as any;
-  if (data.usage) addUsage(s, data.usage.input_tokens, data.usage.output_tokens);
+  // Cached reads are billed input too — count them, or a caching run looks free and the
+  // token accounting silently stops matching the bill.
+  if (data.usage) addUsage(s, (data.usage.input_tokens ?? 0) + (data.usage.cache_read_input_tokens ?? 0)
+    + (data.usage.cache_creation_input_tokens ?? 0), data.usage.output_tokens);
   const content = data.content ?? [];
   s.messages.push({ role: "assistant", content });
   const toolCalls: ToolCall[] = content.filter((b: any) => b.type === "tool_use").map((b: any) => ({ id: b.id, name: b.name, args: b.input ?? {} }));
