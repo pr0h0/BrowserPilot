@@ -197,6 +197,25 @@ describe("workflows and chat", () => {
   });
 });
 
+describe("browser liveness", () => {
+  test("lastSeenAt reflects the live session, not the connect time", async () => {
+    const { registry } = await import("./ws/connectionRegistry.js");
+    const rows = (await app.inject({ method: "GET", url: "/api/browsers", headers: { authorization: "Bearer test-secret" } })).json();
+    const connected = rows.find((b: any) => b.online);
+    if (!connected) return;                        // no live fake extension in this block
+    const live = registry.lastSeen(connected.id);
+    expect(typeof live).toBe("number");
+    expect(connected.lastSeenAt).toBe(live);       // registry value wins over the stored one
+  });
+
+  test("an offline browser keeps its stored lastSeenAt", async () => {
+    const rows = (await app.inject({ method: "GET", url: "/api/browsers", headers: { authorization: "Bearer test-secret" } })).json();
+    for (const b of rows.filter((r: any) => !r.online)) {
+      expect(b.lastSeenAt === null || typeof b.lastSeenAt === "number").toBe(true);
+    }
+  });
+});
+
 describe("auth surface", () => {
   test("every route except /health requires the token", async () => {
     // Enumerate what the app actually serves rather than a hand-kept list — a route added

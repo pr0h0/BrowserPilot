@@ -39,6 +39,13 @@ export const registry = {
     const s = sessions.get(browserId);
     if (s) s.lastSeenAt = Date.now();
   },
+  /** Live last-seen for a connected browser, or undefined when it isn't connected.
+   *  Pings only refresh the in-memory session, so the DB column records when a browser last
+   *  CONNECTED, not when it was last alive — a browser online for hours looks staler than one
+   *  that connected recently and dropped. Callers should prefer this when it returns a value. */
+  lastSeen(browserId: string): number | undefined {
+    return sessions.get(browserId)?.lastSeenAt;
+  },
   removeByWs(ws: WebSocket) {
     for (const [bid, s] of sessions) {
       if (s.ws === ws) {

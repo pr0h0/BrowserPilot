@@ -8,14 +8,14 @@ import { restCommandSchema } from "@browserpilot/protocol";
 export async function browsersRoutes(app: FastifyInstance) {
   app.get("/api/browsers", async () => {
     const rows = db.select().from(schema.browsers).orderBy(desc(schema.browsers.updatedAt)).all();
-    return rows.map((b) => ({ ...b, online: registry.isOnline(b.id), capabilities: parse(b.capabilitiesJson) }));
+    return rows.map(withLiveness);
   });
 
   app.get("/api/browsers/:browserId", async (req, reply) => {
     const { browserId } = req.params as { browserId: string };
     const b = db.select().from(schema.browsers).where(eq(schema.browsers.id, browserId)).get();
     if (!b) return reply.code(404).send({ error: { code: "TAB_NOT_FOUND", message: "browser not found" } });
-    return { ...b, online: registry.isOnline(b.id), capabilities: parse(b.capabilitiesJson) };
+    return withLiveness(b);
   });
 
   app.get("/api/browsers/:browserId/tabs", async (req, reply) => {
@@ -35,3 +35,14 @@ export async function browsersRoutes(app: FastifyInstance) {
 }
 
 const parse = (s: string | null) => { try { return s ? JSON.parse(s) : []; } catch { return []; } };
+
+/** Overlay live connection state on the stored row. lastSeenAt comes from the registry while the
+ *  browser is connected (pings keep it current) and falls back to the DB's connect-time value
+ *  once it isn't — persisting every ping would be a DB write per browser per interval for a
+ *  number nobody reads between requests. */
+const withLiveness = (b: typeof schema.browsers.$inferSelect) => ({
+  ...b,
+  online: registry.isOnline(b.id),
+  lastSeenAt: registry.lastSeen(b.id) ?? b.lastSeenAt,
+  capabilities: parse(b.capabilitiesJson),
+});
