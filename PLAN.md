@@ -1,3 +1,8 @@
+> **Historical.** This is the original build brief the project was generated from, kept for
+> provenance. It does not describe the current system — the stack moved to Bun (not pnpm/Node),
+> and the agent, workflow recording, coordinate input and security model have all moved well past
+> what is written here. **See `README.md` for how BrowserPilot actually works today.**
+
 You are an expert full-stack TypeScript engineer. Build a complete working app named **BrowserPilot** from start to end.
 
 BrowserPilot is a private Chrome Extension + backend app that allows a user-controlled Chrome extension to connect outbound to a backend over WebSocket. The backend can then send structured commands to the extension to control the browser: open/close/reload tabs, list tabs, read page content, select elements, click/type/scroll, capture screenshots, collect console errors, optionally collect network requests, and provide an AI chat that can use the current page, selected elements, screenshots, console errors, and network errors as context.
