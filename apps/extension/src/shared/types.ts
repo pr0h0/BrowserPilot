@@ -1,8 +1,12 @@
 import type { SelectedElement, ConsoleEvent } from "@browserpilot/protocol";
 
+/** A saved backend + its token, so switching servers is one click instead of retyping both. */
+export interface ConnectionProfile { name: string; backendUrl: string; pairingToken: string }
+
 export interface Settings {
-  backendUrl: string;
+  backendUrl: string;    // the ACTIVE connection — selecting a profile copies its values here
   pairingToken: string;
+  profiles: ConnectionProfile[];
   browserId: string;
   browserName: string;
   enableDebugger: boolean;
@@ -34,7 +38,7 @@ export type UiRequest =
   | { kind: "setTabEnabled"; tabId: number; enabled: boolean }
   | { kind: "getActiveTab" }
   | { kind: "getPrefill" }
-  | { kind: "runCommand"; commandType: string; tabId?: number; payload?: unknown }
+  | { kind: "runCommand"; commandType: string; tabId?: number; frameId?: number; payload?: unknown }
   | { kind: "getRecentConsole"; tabId?: number }
   | { kind: "getSelectedElement"; tabId?: number };
 
@@ -45,6 +49,7 @@ export type SwBroadcast =
   | { kind: "status"; status: ConnectionStatus }
   | { kind: "elementSelected"; element: SelectedElement; tabId: number }
   | { kind: "console"; event: ConsoleEvent }
-  | { kind: "chatPrefill"; text: string };
+  | { kind: "chatPrefill"; text: string }
+  | { kind: "settings"; settings: Settings };
 
 export type { SelectedElement, ConsoleEvent };

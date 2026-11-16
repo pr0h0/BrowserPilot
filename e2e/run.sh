@@ -41,7 +41,9 @@ read -r -a EXTRA <<< "${CHROME_EXTRA_FLAGS:-}"
   --no-sandbox --disable-gpu --no-first-run --no-default-browser-check \
   --user-data-dir="$PROFILE" --load-extension="$PWD/apps/extension/dist" \
   --remote-debugging-port=9222 about:blank & CHROME=$!
-trap 'kill $PAGES $SAI $BACK $CHROME 2>/dev/null; rm -rf "$PROFILE" "$(dirname "$TESTDB")"' EXIT
+# Chrome is still writing its profile for a moment after the kill; wait for it, and never let
+# cleanup's exit status replace the suite's.
+trap 'kill $PAGES $SAI $BACK $CHROME 2>/dev/null; wait $CHROME 2>/dev/null; rm -rf "$PROFILE" "$(dirname "$TESTDB")" || true' EXIT
 
 echo "waiting for the test backend..."
 for _ in $(seq 1 30); do curl -s -m 2 http://127.0.0.1:9887/health >/dev/null 2>&1 && break; sleep 1; done

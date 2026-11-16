@@ -44,8 +44,10 @@ function tabId(flags: Record<string, string | boolean>): number | undefined {
   return flags.tab !== undefined ? Number(flags.tab) : undefined;
 }
 
+let FRAME: number | undefined; // --frame <frameId> (from `frames`); applies to every page command
+
 async function cmd(browser: string, type: string, payload?: unknown, tab?: number) {
-  return api(`/api/browsers/${browser}/commands`, { method: "POST", body: JSON.stringify({ type, target: tab !== undefined ? { tabId: tab } : {}, payload }) });
+  return api(`/api/browsers/${browser}/commands`, { method: "POST", body: JSON.stringify({ type, target: { tabId: tab, frameId: FRAME }, payload }) });
 }
 
 const out = (x: unknown) => console.log(typeof x === "string" ? x : JSON.stringify(x, null, 2));
@@ -62,6 +64,7 @@ Usage: browserpilot <command> [options]
   close           --browser <id> --tab <tabId>
   activate        --browser <id> --tab <tabId>
   screenshot      --browser <id> --tab <tabId>
+  frames          --browser <id> --tab <tabId>    (frame tree: frameId, parentFrameId, url)
   text            --browser <id> --tab <tabId>
   html            --browser <id> --tab <tabId>
   links           --browser <id> --tab <tabId>
@@ -72,6 +75,8 @@ Usage: browserpilot <command> [options]
   type            --browser <id> --tab <tabId> --selector "input" --text "hi"
   ask             --browser <id> --tab <tabId> "prompt" [--attach-page --attach-console --attach-screenshot --attach-element]
 
+Page commands (text/html/links/forms/tables/picker/click/type) take --frame <frameId> to run
+inside that iframe, at any nesting depth; omitted = top document.
 If exactly one browser is connected, --browser may be omitted.
 Backend URL via BROWSERPILOT_URL (default http://localhost:9876).
 Pairing token via BROWSERPILOT_TOKEN or PAIRING_TOKEN (required unless backend runs in dev mode without one).`;
@@ -80,6 +85,7 @@ async function main() {
   const [command, ...rest] = process.argv.slice(2);
   const { flags, pos } = parseArgs(rest);
   if (!command || command === "help" || flags.help) return out(HELP);
+  if (flags.frame !== undefined) FRAME = Number(flags.frame);
 
   switch (command) {
     case "health": return out(await api("/health"));
@@ -98,6 +104,7 @@ async function main() {
       const res = r.result ?? {};
       return out({ ok: r.ok, url: res.url, width: res.width, height: res.height, storedPath: res.storedPath, screenshotId: res.screenshotId });
     }
+    case "frames": return out((await cmd(await resolveBrowser(flags), "page.listFrames", {}, tabId(flags))).result);
     case "text": return out((await cmd(await resolveBrowser(flags), "page.extractText", { maxChars: Number(flags.max ?? 20000) }, tabId(flags))).result);
     case "html": return out((await cmd(await resolveBrowser(flags), "page.extractHTML", {}, tabId(flags))).result);
     case "links": return out((await cmd(await resolveBrowser(flags), "page.extractLinks", {}, tabId(flags))).result);

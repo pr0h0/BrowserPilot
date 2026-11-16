@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { sendToSw } from "../../shared/messaging.js";
 import { useSettings, isLocalUrl, isSecure, type ActiveTab } from "../../shared/hooks.js";
 import type { ConnectionStatus } from "../../shared/types.js";
+import { ProfilePicker } from "../../shared/ProfilePicker.js";
 
 const COLORS: Record<string, string> = { connected: "#2ecc71", connecting: "#f1c40f", disconnected: "#e74c3c" };
 
@@ -31,6 +32,7 @@ export function ConnectionPanel({ status, tab, onTabToggle }: { status: Connecti
         <span className="dot" style={{ background: COLORS[state] }} /><strong>{state}</strong>
         {status?.lastError && <span className="muted err">· {status.lastError}</span>}
       </div>
+      <ProfilePicker settings={settings} url={url} token={token} onChange={reload} />
       <div className="row"><input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="ws://localhost:9876/ws" /></div>
       {warn && <div className="muted" style={{ color: "#e67e22" }}>⚠ Non-local & not WSS.</div>}
       <div className="row"><input value={token} onChange={(e) => setToken(e.target.value)} type="password" placeholder="pairing token (optional)" /></div>

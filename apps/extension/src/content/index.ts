@@ -23,7 +23,9 @@ const sendStep = (step: RecordedStep) =>
 
 // A recording that crosses a navigation gets a fresh content script, which knows nothing. Ask
 // the service worker (which does) whether this tab is mid-recording, and pick the thread back up.
-if (!alreadyLoaded) chrome.runtime.sendMessage({ kind: "recorderQuery" })
+// Top frame only: a copy injected into an iframe would otherwise join the recording and log the
+// iframe's URL as a "go to" step.
+if (!alreadyLoaded && window === window.top) chrome.runtime.sendMessage({ kind: "recorderQuery" })
   .then((res: any) => {
     if (!res?.recording || isRecording()) return;
     startRecorder(sendStep);

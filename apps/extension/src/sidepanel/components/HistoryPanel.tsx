@@ -25,7 +25,14 @@ export function HistoryPanel({ backendUrl, token, browserId }: { backendUrl?: st
     try { const r = await api.get(`/api/activity?browserId=${browserId}&limit=80`); setItems(r.items ?? []); setErr(""); }
     catch (e) { setErr(String(e)); }
   }, [backendUrl, token, browserId]);
-  useEffect(() => { load(); const t = setInterval(load, 4000); return () => clearInterval(t); }, [load]);
+  // Poll only while someone can see it; catch up the moment the panel is visible again.
+  useEffect(() => {
+    load();
+    const t = setInterval(() => { if (!document.hidden) load(); }, 4000);
+    const onVis = () => { if (!document.hidden) load(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { clearInterval(t); document.removeEventListener("visibilitychange", onVis); };
+  }, [load]);
 
   const summarize = (it: Item): string => {
     const d = it.details ?? {};

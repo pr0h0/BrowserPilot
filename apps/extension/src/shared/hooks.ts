@@ -14,7 +14,9 @@ export function useStatus() {
 export function useSettings() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const reload = useCallback(() => sendToSw({ kind: "getSettings" }).then((r) => { if (r.ok) setSettings(r.data as Settings); }), []);
-  useEffect(() => { reload(); }, [reload]);
+  // Every open view follows a save made anywhere (e.g. a profile switch in Settings), so panels
+  // never keep talking to the previous server with the previous token.
+  useEffect(() => { reload(); return onSwBroadcast((m) => { if (m.kind === "settings") setSettings(m.settings); }); }, [reload]);
   return { settings, setSettings, reload };
 }
 

@@ -12,6 +12,7 @@ export async function getSettings(): Promise<Settings> {
   const settings: Settings = {
     backendUrl: raw?.backendUrl || DEFAULT_BACKEND_URL,
     pairingToken: raw?.pairingToken || "",
+    profiles: Array.isArray(raw?.profiles) ? raw.profiles : [],
     browserId: raw?.browserId || randomId(),
     browserName: raw?.browserName || "My Chrome",
     enableDebugger: raw?.enableDebugger ?? false,

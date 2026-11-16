@@ -28,7 +28,7 @@ export async function executeCommand(browserId: string, cmd: RestCommand): Promi
   }).run();
 
   const response = await sendCommand(browserId, {
-    id: commandId, type: cmd.type, target: { tabId: cmd.target?.tabId, browserId }, payload: cmd.payload, timeoutMs,
+    id: commandId, type: cmd.type, target: { tabId: cmd.target?.tabId, frameId: cmd.target?.frameId, browserId }, payload: cmd.payload, timeoutMs,
   }, timeoutMs);
 
   // Side effect: persist screenshots returned by capture commands.

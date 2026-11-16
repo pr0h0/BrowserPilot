@@ -64,6 +64,17 @@ c.addEventListener("mousemove",e=>{out.dataset.hover="hover:"+Math.round(e.clien
 c.addEventListener("click",e=>{out.textContent="click:"+Math.round(e.clientX)+","+Math.round(e.clientY)+" trusted:"+e.isTrusted;});
 <\/script>`, { headers: { "content-type": "text/html" } });
     }
+    // Nested iframes, alternating origin (127.0.0.1 ↔ localhost = cross-site, so Chrome puts
+    // them in separate processes): /frames.html → /frame?d=1 → /frame?d=2 → /frame?d=3.
+    // Each level has the same #q/#b/#out, so acting in the wrong frame is visible.
+    if (url.pathname === "/frames.html" || url.pathname === "/frame") {
+      const d = Number(url.searchParams.get("d") ?? 0);
+      const host = d % 2 === 0 ? "localhost" : "127.0.0.1";
+      const child = d < 3 ? `<iframe src="http://${host}:8899/frame?d=${d + 1}" width="600" height="${400 - d * 80}"></iframe>` : "";
+      return new Response(`<!doctype html><title>Frame ${d}</title>
+<p>level ${d}</p><input id="q"><button id="b" onclick="document.getElementById('out').textContent='clicked:${d}:'+document.getElementById('q').value">Go</button>
+<div id="out"></div>${child}`, { headers: { "content-type": "text/html" } });
+    }
     return new Response("nope", { status: 404 });
   },
 });

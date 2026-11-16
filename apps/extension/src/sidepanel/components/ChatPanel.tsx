@@ -13,6 +13,10 @@ const SESS = "browserpilot:sessions";
 const CUR = "browserpilot:currentSession";
 const OLD = "browserpilot:chats"; // legacy page-keyed chats, migrated once
 const MODE_STORE = "browserpilot:agentMode";
+// The run in flight and the chat it belongs to. Lets a reopened panel (or a return from another
+// tab of the panel) pick the run back up — including a pending approval the notification sent
+// the user here for.
+const LIVE_RUN = "browserpilot:liveRun";
 const NEW_TITLE = "New chat";
 
 const newId = () => `s_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
@@ -26,6 +30,17 @@ const timeAgo = (t: number) => {
   return `${Math.round(s / 86400)}d ago`;
 };
 
+/** A conversation as Markdown — what the user asked, each tool step the agent took, and its answers. */
+export function chatToMarkdown(title: string, msgs: Msg[]): string {
+  const parts = [`# ${title}`];
+  for (const m of msgs) {
+    if (m.role === "user") { parts.push(`## You\n\n${m.content}`); continue; }
+    const steps = (m.actions ?? []).map((t) => `- ${t.ok ? "✓" : "✗"} \`${t.tool}\`${t.resultSummary ? ` — ${t.resultSummary}` : ""}`);
+    parts.push(`## Assistant${m.tokens ? ` (${m.tokens} tokens)` : ""}\n\n${steps.length ? `${steps.join("\n")}\n\n` : ""}${m.content}`);
+  }
+  return parts.join("\n\n") + "\n";
+}
+
 const MODES: Array<[AgentMode, string, string]> = [
   ["read", "Read-only", "Reads the page/console but never clicks or types."],
   ["approve", "Approve actions", "Proposes each action; you approve before it runs (auto-runs on trusted sites)."],
@@ -35,8 +50,9 @@ const MODES: Array<[AgentMode, string, string]> = [
 interface Live { runId: string; steps: AgentTranscriptItem[]; assistantText: string;
   pending?: { actions: AgentAction[] }; status: string; tokens: number }
 
-export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefill, maxSteps, model }:
-  { backendUrl?: string; browserId?: string; tabId?: number; pageUrl?: string; token?: string; prefill?: string; maxSteps?: number; model?: string }) {
+export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefill, maxSteps, model, tabEnabled, onEnableTab }:
+  { backendUrl?: string; browserId?: string; tabId?: number; pageUrl?: string; token?: string; prefill?: string; maxSteps?: number; model?: string;
+    tabEnabled?: boolean; onEnableTab?: () => void }) {
   const [sessions, setSessions] = useState<Sessions>({});
   const [currentId, setCurrentId] = useState<string>("");
   const [showList, setShowList] = useState(false);
@@ -46,6 +62,7 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefil
   const [error, setError] = useState("");
   const [live, setLive] = useState<Live | null>(null);
   const [prompts, setPrompts] = useState<SavedPrompt[]>([]);
+  const [copied, setCopied] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const scrollerRef = useRef<HTMLElement | null>(null);
   const stickRef = useRef(true); // follow new output only while the user is at the bottom
@@ -56,6 +73,12 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefil
   useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
   useEffect(() => { currentIdRef.current = currentId; }, [currentId]);
   const api = makeApi(backendUrl, token);
+  // Polling stops when this panel view unmounts; the next mount resumes from LIVE_RUN. Without
+  // this, switching to Tools and back left an orphan poller and a run the chat no longer showed.
+  const aliveRef = useRef(true);
+  useEffect(() => { aliveRef.current = true; return () => { aliveRef.current = false; }; }, []);
+  const [loaded, setLoaded] = useState(false);
+  const resumeRef = useRef<{ runId: string; sessionId: string } | null>(null);
 
   const current = sessions[currentId];
   const history = current?.messages ?? [];
@@ -64,7 +87,7 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefil
 
   // Load sessions once. Sessions are global — NOT tied to page/domain — and persist across pages.
   useEffect(() => {
-    chrome.storage.local.get([SESS, CUR, OLD, MODE_STORE, PROMPTS]).then((r) => {
+    chrome.storage.local.get([SESS, CUR, OLD, MODE_STORE, PROMPTS, LIVE_RUN]).then((r) => {
       if (r[MODE_STORE]) setMode(r[MODE_STORE] as AgentMode);
       if (Array.isArray(r[PROMPTS])) setPrompts(r[PROMPTS] as SavedPrompt[]);
       const sess: Sessions = { ...(r[SESS] as Sessions) };
@@ -77,13 +100,17 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefil
         }
       }
       let cur = r[CUR] as string | undefined;
+      const lr = r[LIVE_RUN] as { runId: string; sessionId: string } | undefined;
+      if (lr?.runId && sess[lr.sessionId]) { cur = lr.sessionId; resumeRef.current = lr; }
       if (!cur || !sess[cur]) {
         const ids = Object.keys(sess).sort((a, b) => sess[b].updatedAt - sess[a].updatedAt);
         if (ids.length) cur = ids[0];
         else { const s = blankSession(); sess[s.id] = s; cur = s.id; }
       }
+      sessionsRef.current = sess; currentIdRef.current = cur!;
       setSessions(sess); setCurrentId(cur);
       chrome.storage.local.set({ [SESS]: sess, [CUR]: cur });
+      setLoaded(true);
     });
   }, []);
 
@@ -152,25 +179,51 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefil
     saveSessions(next, cur);
   };
 
-  // Poll the backend event stream for a run until it finishes / needs approval.
-  const pollRun = async (runId: string) => {
-    let since = 0;
+  // Resume a run that was in flight when the panel last closed (settings load async, so wait for
+  // the backend URL). A run the backend already swept is dropped quietly.
+  useEffect(() => {
+    const lr = resumeRef.current;
+    if (!loaded || !lr || !api.ok) return;
+    resumeRef.current = null;
+    void pollRun(lr.runId, true);
+  }, [loaded, backendUrl]);
+
+  // Poll the backend event stream for a run until it finishes / needs approval. Always replays
+  // from cursor 0, so the live card is rebuilt from the run's full history.
+  const pollRun = async (runId: string, resuming = false) => {
+    let since = 0, failures = 0;
     let cur: Live = { runId, steps: [], assistantText: "", status: "running", tokens: 0 };
+    const finish = (msg?: Msg) => {
+      chrome.storage.local.remove(LIVE_RUN);
+      if (msg) appendMsgs([msg]);
+      setLive(null);
+    };
+    chrome.storage.local.set({ [LIVE_RUN]: { runId, sessionId: currentIdRef.current } });
     setLive(cur);
     while (true) {
+      if (!aliveRef.current) return; // unmounted: the next mount resumes from LIVE_RUN
       let ev: AgentEventsResponse;
-      try { ev = await api.get(`/api/agent/events?runId=${runId}&since=${since}`); }
-      catch (e) { appendMsgs([{ role: "assistant", content: `⚠ ${String(e)}` }]); setLive(null); return; }
+      try { ev = await api.get(`/api/agent/events?runId=${runId}&since=${since}`); failures = 0; }
+      catch (e) {
+        if (!aliveRef.current) return;
+        const gone = /not found or expired/.test(String(e));
+        // A backend restart or a blip shouldn't throw away the run view; give it a few tries.
+        if (!gone && ++failures < 6) { await new Promise((r) => setTimeout(r, 1000 * failures)); continue; }
+        return finish(resuming && gone ? undefined : { role: "assistant", content: `⚠ ${String(e)}`, actions: cur.steps });
+      }
+      if (!aliveRef.current) return;
       since = ev.cursor;
       const tokens = ev.usage?.totalTokens ?? cur.tokens;
       for (const e of ev.events as AgentEvent[]) {
         if (e.type === "tool") cur = { ...cur, steps: [...cur.steps, { tool: e.tool, args: e.args, ok: e.ok, resultSummary: e.resultSummary }] };
         else if (e.type === "assistant" && e.text) cur = { ...cur, assistantText: e.text };
         else if (e.type === "awaiting_approval") cur = { ...cur, assistantText: e.assistantText || cur.assistantText, pending: { actions: e.pendingActions } };
-        else if (e.type === "done") { appendMsgs([{ role: "assistant", content: e.answer, actions: cur.steps, tokens }]); setLive(null); return; }
-        else if (e.type === "error") { appendMsgs([{ role: "assistant", content: `⚠ ${e.code}: ${e.message}`, actions: cur.steps, tokens }]); setLive(null); return; }
+        else if (e.type === "done") return finish({ role: "assistant", content: e.answer, actions: cur.steps, tokens });
+        else if (e.type === "error") return finish({ role: "assistant", content: `⚠ ${e.code}: ${e.message}`, actions: cur.steps, tokens });
       }
-      cur = { ...cur, status: ev.status, tokens };
+      // The replay contains every awaiting_approval the run ever hit. Only the run's CURRENT
+      // status says whether one is still open — otherwise an approved action's card came back.
+      cur = { ...cur, status: ev.status, tokens, pending: ev.status === "awaiting_approval" ? cur.pending : undefined };
       setLive({ ...cur });
       if (ev.status === "awaiting_approval") return; // wait for the user
       await new Promise((r) => setTimeout(r, 500));
@@ -206,7 +259,7 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefil
     resolvingRef.current = true;
     setLive({ ...live, pending: undefined, status: "running" }); // hide the approve card immediately
     try { await api.post("/api/agent/approve", { runId: live.runId, approve }); await pollRun(live.runId); }
-    catch (e) { appendMsgs([{ role: "assistant", content: `⚠ ${String(e)}` }]); setLive(null); }
+    catch (e) { appendMsgs([{ role: "assistant", content: `⚠ ${String(e)}` }]); chrome.storage.local.remove(LIVE_RUN); setLive(null); }
     finally { resolvingRef.current = false; }
   };
 
@@ -223,6 +276,11 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefil
           🗂 Chats{sortedSessions.length > 1 ? ` (${sortedSessions.length})` : ""}
         </button>
         <span className="muted ellipsis" title={current?.title} style={{ flex: 1, textAlign: "center" }}>{current?.title ?? NEW_TITLE}</span>
+        <button className="ghost sm" disabled={!history.length} title="Copy this chat, with the agent's steps, as Markdown"
+          onClick={async () => {
+            try { await navigator.clipboard.writeText(chatToMarkdown(current?.title ?? NEW_TITLE, history)); setCopied(true); setTimeout(() => setCopied(false), 1500); }
+            catch (e) { setError(`Copy failed: ${String(e)}`); }
+          }}>{copied ? "✓ Copied" : "⧉ Copy"}</button>
         <button className="ghost sm" onClick={newChat}>+ New</button>
       </div>
 
@@ -249,6 +307,12 @@ export function ChatPanel({ backendUrl, browserId, tabId, pageUrl, token, prefil
         <label className="check"><input type="checkbox" checked={attachShot} onChange={(e) => setAttachShot(e.target.checked)} />Screenshot</label>
       </div>
       <div className="muted tiny">Actions apply to the active tab: <b>{pageLabel}</b></div>
+      {tabId != null && tabEnabled === false && (
+        <div className="card row between" style={{ borderColor: "#e67e22" }}>
+          <span className="tiny">Control is off for this tab — the agent can't read or act on it.</span>
+          {onEnableTab && <button className="sm" onClick={onEnableTab}>Enable</button>}
+        </div>
+      )}
 
       <div className="chatlog">
         {history.length === 0 && !live && <div className="muted">Ask me to read or act on the current page. This conversation follows you across pages — start a new chat anytime.</div>}
@@ -323,8 +387,22 @@ function MessageBox({ msg }: { msg: Msg }) {
   );
 }
 
-const describeAction = (a: AgentAction) =>
-  a.name === "click" ? `🖱 click ${a.args.selector}`
-  : a.name === "type" ? `⌨ type "${String(a.args.text ?? "")}" into ${a.args.selector}`
-  : a.name === "navigate" ? `🧭 navigate ${a.args.url}`
-  : `${a.name} ${JSON.stringify(a.args)}`;
+// What the approval card shows. This is the user's whole basis for saying yes, so every action
+// tool reads as a sentence rather than a JSON blob.
+const describeAction = (a: AgentAction) => {
+  const g = a.args as Record<string, any>;
+  switch (a.name) {
+    case "click": return `🖱 click ${g.selector}`;
+    case "click_at": return `🖱 click at (${g.x}, ${g.y})${g.label ? ` — ${g.label}` : ""}`;
+    case "type": return `⌨ type "${String(g.text ?? "")}" into ${g.selector}`;
+    case "press_key": return `⌨ press ${g.key}${g.selector ? ` on ${g.selector}` : ""}`;
+    case "set_field": return `☑ set ${g.selector} to ${g.checked != null ? (g.checked ? "checked" : "unchecked") : `"${g.value}"`}`;
+    case "navigate": return `🧭 navigate ${g.url}`;
+    case "switch_tab": return `🗂 switch to tab ${g.tabId}`;
+    case "switch_frame": return `🪟 switch to frame ${g.frameId}`;
+    case "drag": return `✋ drag ${g.from} → ${g.to}`;
+    case "upload_file": return `📤 upload ${g.path} into ${g.selector}`;
+    case "download": return `📥 download ${g.url}${g.filename ? ` as ${g.filename}` : ""}`;
+    default: return `${a.name} ${JSON.stringify(g)}`;
+  }
+};

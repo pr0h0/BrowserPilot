@@ -54,6 +54,17 @@ Bun.serve({
       const toolCount = body.messages.filter((m: any) => m.role === "tool").length;
       const sawImage = JSON.stringify(body.messages).includes("image_url");
 
+      // Frames: find the deepest iframe in list_frames, step into it, act there.
+      if (userText.includes("SCENARIO:frames")) {
+        const deep = /"frameId":(\d+),"parentFrameId":\d+,"url":"[^"]*d=3/.exec(JSON.stringify(body.messages).replace(/\\"/g, '"'));
+        switch (toolCount) {
+          case 0: return Response.json(tc("list_frames", {}));
+          case 1: return Response.json(tc("switch_frame", { frameId: deep ? Number(deep[1]) : -1 }));
+          case 2: return Response.json(tc("type", { selector: "#q", text: "agent" }));
+          case 3: return Response.json(tc("click", { selector: "#b" }));
+          default: return Response.json(final("FRAMES DONE"));
+        }
+      }
       if (userText.includes("SCENARIO:search")) {
         switch (toolCount) {
           case 0: return Response.json(tc("list_interactive", {}));
@@ -74,6 +85,14 @@ Bun.serve({
           case 0: return Response.json(tc("hover_at", { x: 200, y: 150 }));
           case 1: return Response.json(tc("click_at", { x: 200, y: 150, label: "canvas target" }));
           default: return Response.json(final("HOVERGATE DONE"));
+        }
+      }
+      // Approve, then keep the run busy for ~3s (slow model turn) so the UI is observed mid-run AFTER approval.
+      if (userText.includes("SCENARIO:uiapprove")) {
+        switch (toolCount) {
+          case 0: return Response.json(tc("type", { selector: "#q", text: "ui approved" }));
+          case 1: await Bun.sleep(3000); return Response.json(tc("list_tabs", {})); // a slow model turn
+          default: return Response.json(final("UI APPROVE DONE"));
         }
       }
       if (userText.includes("SCENARIO:approve")) {

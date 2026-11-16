@@ -61,6 +61,8 @@ export function App() {
     ["activity", "📋", "Activity"],
     ["settings", "⚙️", "Settings"],
   ];
+  // Which saved connection profile is live, so it's obvious which server you are driving.
+  const profile = settings?.profiles?.find((p) => p.backendUrl === settings.backendUrl && p.pairingToken === settings.pairingToken)?.name;
   const common = { backendUrl: settings?.backendUrl, token: settings?.pairingToken, browserId: status?.browserId };
 
   return (
@@ -69,7 +71,7 @@ export function App() {
         <strong>🛩️ BrowserPilot</strong>
         <span className="row" style={{ gap: 6 }}>
           <span className="dot" style={{ background: COLORS[state] }} />
-          <span className="muted tiny">{state}{tab?.enabled ? " · control on" : ""}</span>
+          <span className="muted tiny">{state}{profile ? ` · ${profile}` : ""}{tab?.enabled ? " · control on" : ""}</span>
           <button className="ghost sm" title="Close side panel" onClick={() => window.close()}>✕</button>
         </span>
       </header>
@@ -84,7 +86,8 @@ export function App() {
       </nav>
 
       <main className="body">
-        {view === "chat" && <ChatPanel {...common} tabId={tab?.id} pageUrl={tab?.url} prefill={chatPrefill} maxSteps={settings?.maxSteps} model={settings?.model} />}
+        {view === "chat" && <ChatPanel {...common} tabId={tab?.id} pageUrl={tab?.url} prefill={chatPrefill} maxSteps={settings?.maxSteps} model={settings?.model}
+          tabEnabled={tab?.enabled} onEnableTab={toggleTab} />}
         {view === "tools" && <>
           <PageTools tabId={tab?.id} />
           <SelectedElementPanel element={selected} onAskAI={askWithElement} />

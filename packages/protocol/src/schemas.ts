@@ -10,6 +10,8 @@ export const COMMAND_TYPES = [
   "page.extractText", "page.extractHTML", "page.extractMetadata", "page.extractLinks",
   "page.extractImages", "page.extractForms", "page.extractTables", "page.getSelection",
   "page.getSelectedElement", "page.startElementPicker", "page.stopElementPicker", "page.listInteractive",
+  // frames: list the tab's frame tree; any page.* command can then target one via target.frameId
+  "page.listFrames",
   // workflow recording (teach-by-demonstration)
   "page.startRecorder", "page.stopRecorder",
   // page actions
@@ -60,10 +62,13 @@ export const helloAckSchema = z.object({
 export const pingSchema = z.object({ type: z.literal("ping"), t: z.number().optional() });
 export const pongSchema = z.object({ type: z.literal("pong"), t: z.number().optional() });
 
+/** Frame within a tab (chrome frameId, from page.listFrames). 0 / omitted = top document. */
+const frameIdSchema = z.number().int().min(0).optional();
+
 export const commandSchema = z.object({
   id: z.string(),
   type: commandTypeSchema,
-  target: z.object({ tabId: z.number().optional(), browserId: z.string().optional() }).optional(),
+  target: z.object({ tabId: z.number().optional(), frameId: frameIdSchema, browserId: z.string().optional() }).optional(),
   payload: z.unknown().optional(),
   timeoutMs: z.number().int().positive().max(120_000).optional(),
 });
@@ -91,7 +96,7 @@ export const eventSchema = z.object({
 /** REST: body for POST /api/browsers/:id/commands */
 export const restCommandSchema = z.object({
   type: commandTypeSchema,
-  target: z.object({ tabId: z.number().optional() }).optional(),
+  target: z.object({ tabId: z.number().optional(), frameId: frameIdSchema }).optional(),
   payload: z.unknown().optional(),
   timeoutMs: z.number().int().positive().max(120_000).optional(),
 });
@@ -159,7 +164,7 @@ export const workflowRunSchema = z.object({
   name: z.string(),
   steps: z.array(z.object({
     type: commandTypeSchema,
-    target: z.object({ tabId: z.number().optional() }).optional(),
+    target: z.object({ tabId: z.number().optional(), frameId: frameIdSchema }).optional(),
     payload: z.unknown().optional(),
     timeoutMs: z.number().int().positive().optional(),
   })).min(1),

@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { sendToSw } from "../shared/messaging.js";
 import { useStatus, useSettings, useActiveTab, isLocalUrl, isSecure } from "../shared/hooks.js";
+import { ProfilePicker } from "../shared/ProfilePicker.js";
 
 const COLORS: Record<string, string> = { connected: "#2ecc71", connecting: "#f1c40f", disconnected: "#e74c3c" };
 
@@ -32,6 +33,9 @@ export function App() {
         <strong>{state}</strong>
         {status?.lastError && <span className="muted">· {status.lastError}</span>}
       </div>
+
+      <label>Profile</label>
+      <ProfilePicker settings={settings} url={url} token={token} onChange={reload} />
 
       <label>Backend URL</label>
       <div className="row"><input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="ws://localhost:9876/ws" /></div>

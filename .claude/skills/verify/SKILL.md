@@ -21,7 +21,7 @@ on a live form, console capture (main-world hook), screenshots, and the agent lo
 # https://googlechromelabs.github.io/chrome-for-testing/  → linux64 chrome zip
 CHROME_BIN=/path/to/chrome-linux64/chrome ./e2e/run.sh
 ```
-Expect `ALL E2E CHECKS PASSED` (76 checks): tab gate, live click/type, console capture,
+Expect `ALL E2E CHECKS PASSED` (94 checks): tab gate, side-panel Tools frame picker, side-panel chat UI (approval resume + no ghost card), connection-profile switching, nested cross-origin iframes (frameId targeting + agent switch_frame), live click/type, console capture,
 screenshots, coordinate canvas click/hover, workflow record→save→replay, network capture,
 `ui.notify` (and that the Settings toggle suppresses it), REST auth rejection, agent
 auto/read-only/approve/reject, live streaming + Stop, sensitive-action floor, per-site block,
@@ -58,6 +58,11 @@ browser is targeted. Do NOT `import()` dynamically in the service worker: Vite's
 references `window` and throws — use static imports (cdpInput is statically imported for this).
 
 ## Gotchas learned the hard way
+- Recent Chromium (incl. Playwright's `~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome`)
+  ignores `--load-extension` → "service worker not found". Run with
+  `CHROME_EXTRA_FLAGS=--disable-features=DisableLoadExtensionCommandLineSwitch`.
+- `pkill -f chrome-linux64/chrome` in the same shell command as `run.sh` kills that shell
+  (its own command line matches). Run it as a separate command.
 - Start long-lived processes with `setsid nohup ... < /dev/null &` — otherwise later shell
   timeouts kill them with the process group.
 - CDP `Runtime.evaluate` userGesture works in *page* contexts, not the service worker —

@@ -134,6 +134,9 @@ In the popup or side panel:
 - **Browser name** — anything you like.
 - Click **Save**, then **Connect**. The status dot turns green when connected.
 - A warning appears if the URL is neither localhost nor `wss://`.
+- **Profiles** — to switch between servers (say `wss://pilot.example/ws` and `ws://localhost:9876/ws`,
+  each with its own token), fill in the URL and token and click **Save as…**. Pick a profile from the
+  dropdown to make it active, and the extension reconnects to that server. **✕** deletes the active profile.
 
 Open the side panel from the popup's **Open side panel** button.
 
@@ -196,6 +199,12 @@ bp localhost:9876/api/browsers/<id>/tabs
 bp -X POST localhost:9876/api/browsers/<id>/commands \
   -H 'content-type: application/json' \
   -d '{"type":"tabs.open","payload":{"url":"https://example.com","active":true}}'
+
+# iframes (any depth): list the frame tree, then aim any page.* command at a frameId
+bp -X POST localhost:9876/api/browsers/<id>/commands -H 'content-type: application/json' \
+  -d '{"type":"page.listFrames","target":{"tabId":12}}'        # → frameId, parentFrameId, url
+bp -X POST localhost:9876/api/browsers/<id>/commands -H 'content-type: application/json' \
+  -d '{"type":"page.click","target":{"tabId":12,"frameId":7},"payload":{"selector":"#submit"}}'
 
 bp localhost:9876/api/commands/<commandId>
 bp 'localhost:9876/api/logs/console?browserId=<id>'

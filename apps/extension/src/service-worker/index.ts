@@ -100,6 +100,7 @@ async function handleUi(req: UiRequest): Promise<UiResponse> {
     case "disconnect": socket.disconnect(); return { ok: true, data: socket.status() };
     case "saveSettings": {
       const next = await saveSettings(req.settings);
+      chrome.runtime.sendMessage({ kind: "settings", settings: next }).catch(() => {});
       // Reconnect if connection-relevant settings changed.
       if (req.settings.backendUrl || req.settings.pairingToken || req.settings.browserName) {
         socket.disconnect(); await socket.connect();
@@ -113,7 +114,7 @@ async function handleUi(req: UiRequest): Promise<UiResponse> {
     }
     case "runCommand": {
       const tabId = req.tabId ?? (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id;
-      const res = await dispatchCommand({ id: `local_${Date.now()}`, type: req.commandType as any, target: { tabId }, payload: req.payload });
+      const res = await dispatchCommand({ id: `local_${Date.now()}`, type: req.commandType as any, target: { tabId, frameId: req.frameId }, payload: req.payload });
       return res.ok ? { ok: true, data: res.result } : { ok: false, error: res.error?.message ?? "command failed" };
     }
     case "getRecentConsole": {

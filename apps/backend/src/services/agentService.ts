@@ -42,6 +42,8 @@ Acting — be efficient:
   both always ask the user to approve.
 - After navigate (or a navigating click) the page is new: wait_for a selector, then list_interactive.
 - Work across tabs with list_tabs + switch_tab when the task needs more than one page.
+- Content inside an <iframe> (embedded forms, payment widgets, editors, nested iframes at any depth)
+  is invisible to page tools until you list_frames + switch_frame into it; switch_frame 0 returns to the top.
 - Use screenshot when text is ambiguous (layout, colors, images); the image arrives next message.
 
 Canvas / no-DOM targets (games, maps, charts, drawing tools, <video> controls):
@@ -72,6 +74,7 @@ const TOOL_TO_COMMAND: Record<string, { type: string; payload?: (a: any) => unkn
   scroll: { type: "page.scroll", payload: (a) => ({ selector: a.selector, toBottom: a.toBottom }) },
   screenshot: { type: "tabs.captureVisible" },
   list_tabs: { type: "tabs.list" },
+  list_frames: { type: "page.listFrames" },
   click: { type: "page.click", payload: (a) => ({ selector: a.selector }) },
   click_at: { type: "page.click", payload: (a) => ({ x: a.x, y: a.y }) },
   hover_at: { type: "page.hover", payload: (a) => ({ x: a.x, y: a.y }) },
@@ -82,10 +85,10 @@ const TOOL_TO_COMMAND: Record<string, { type: string; payload?: (a: any) => unkn
   drag: { type: "page.drag", payload: (a) => ({ from: a.from, to: a.to }) },
   upload_file: { type: "page.upload", payload: (a) => ({ selector: a.selector, files: [a.path] }) },
   download: { type: "downloads.download", payload: (a) => ({ url: a.url, filename: a.filename }) },
-  // switch_tab is handled specially (mutates session), not dispatched directly.
+  // switch_tab / switch_frame are handled specially (mutate session), not dispatched directly.
 };
-const READ_TOOLS = ["list_interactive", "find", "extract_text", "get_selected_element", "get_console", "get_network", "wait_for", "scroll", "screenshot", "list_tabs", "hover_at"];
-const ACTION_TOOLS = ["click", "click_at", "type", "press_key", "navigate", "switch_tab", "set_field", "drag", "upload_file", "download"];
+const READ_TOOLS = ["list_interactive", "find", "extract_text", "get_selected_element", "get_console", "get_network", "wait_for", "scroll", "screenshot", "list_tabs", "list_frames", "hover_at"];
+const ACTION_TOOLS = ["click", "click_at", "type", "press_key", "navigate", "switch_tab", "switch_frame", "set_field", "drag", "upload_file", "download"];
 // File actions always need human approval (exfiltration / untrusted-download risk), even in auto.
 const FILE_ACTIONS = new Set(["upload_file", "download"]);
 // Same-page actions whose result auto-includes the UPDATED interactive elements, so the model
@@ -110,6 +113,8 @@ const TOOL_SCHEMAS: Record<string, { description: string; params: object }> = {
   press_key: { description: "Press a key (e.g. Enter) on an element or the focused element. Enter submits the form.", params: { type: "object", properties: { selector: { type: "string" }, key: { type: "string" } }, required: ["key"] } },
   navigate: { description: "Navigate the current tab to a URL.", params: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
   switch_tab: { description: "Make another open tab (by id from list_tabs) the target of subsequent actions.", params: { type: "object", properties: { tabId: { type: "number" } }, required: ["tabId"] } },
+  list_frames: { description: "List every frame in the current tab at any nesting depth: frameId, parentFrameId (-1 = top document) and url. Follow parentFrameId to see which iframe sits inside which.", params: { type: "object", properties: {} } },
+  switch_frame: { description: "Make a frame (by frameId from list_frames) the target of subsequent page tools — list_interactive, click, type, extract_text, etc. then act INSIDE that iframe. frameId 0 = back to the top document. Resets on navigate/switch_tab.", params: { type: "object", properties: { frameId: { type: "number" } }, required: ["frameId"] } },
   set_field: { description: "Set a non-text form control by CSS selector: a <select> (value = the option value or visible text), a checkbox/radio (checked = true/false), or date/number/range inputs (value). Use this instead of 'type' for dropdowns and checkboxes.", params: { type: "object", properties: { selector: { type: "string" }, value: { type: "string" }, checked: { type: "boolean" } }, required: ["selector"] } },
   drag: { description: "Drag from one element to another (e.g. reorder a list, move a card, use a slider). Both are CSS selectors.", params: { type: "object", properties: { from: { type: "string" }, to: { type: "string" } }, required: ["from", "to"] } },
   upload_file: { description: "Upload a local file into a <input type=file> by CSS selector. 'path' is an absolute path on the machine running the browser. Always asks the user to approve.", params: { type: "object", properties: { selector: { type: "string" }, path: { type: "string" } }, required: ["selector", "path"] } },
@@ -124,10 +129,12 @@ interface Session {
   provider: string; model: string; apiKey: string; baseUrl: string;
   system: string; messages: any[]; mode: AgentMode;
   browserId: string; tabId?: number; domain: string;
+  frameId?: number; frameDomain?: string;     // switch_frame target (undefined = top document)
   headless: boolean;                          // scheduled run: never pauses for approval
   transcript: AgentTranscriptItem[];
   events: AgentEvent[]; status: AgentStatus; aborted: boolean;
   pending?: ToolCall[]; iterations: number; maxSteps: number; createdAt: number;
+  touchedAt?: number;                         // last event; the sweep's clock
   pendingImages: string[];
   elementLabels: Map<string, string>;         // selector → visible text, for risk classification
   injectionFlagged?: string;                  // reason, when the current page tripped the detector
@@ -143,7 +150,7 @@ const DEFAULT_MAX_STEPS = 100; // per-run turn ceiling when the client doesn't s
 // and the hover feedback it produces is how the model checks its aim before click_at — which stays
 // gated as an action. Allow the look, gate the commit.
 const toolNames = (mode: AgentMode) => (mode === "read" ? READ_TOOLS : [...READ_TOOLS, ...ACTION_TOOLS]);
-const emit = (s: Session, ev: AgentEvent) => { s.events.push(ev); };
+const emit = (s: Session, ev: AgentEvent) => { s.events.push(ev); s.touchedAt = Date.now(); };
 
 /** Best-effort desktop notification via the extension. The run must never fail because a
  *  notification did — headless (scheduled) runs skip it, nobody is watching those live. */
@@ -342,6 +349,8 @@ function decideAction(s: Session, call: ToolCall): "run" | "approve" | "refuse" 
 
   const targetDomain = call.name === "navigate" ? domainOf(String(call.args.url ?? "")) : s.domain;
   if (getSiteMode(targetDomain) === "blocked") return "refuse";
+  // An iframe is its own site: a blocked bank embedded in some other page is still the bank.
+  if (s.frameDomain && call.name !== "navigate" && getSiteMode(s.frameDomain) === "blocked") return "refuse";
 
   // File upload/download always require human approval (exfiltration / untrusted-download risk).
   if (FILE_ACTIONS.has(call.name)) return s.headless ? "refuse" : "approve";
@@ -363,13 +372,14 @@ function decideAction(s: Session, call: ToolCall): "run" | "approve" | "refuse" 
 
   if (s.mode === "auto") return "run";
   // approve mode: skip the prompt only on sites the user marked "always allow".
-  return getSiteMode(s.domain) === "always" ? "run" : "approve";
+  return getSiteMode(s.domain) === "always" && (!s.frameDomain || getSiteMode(s.frameDomain) === "always") ? "run" : "approve";
 }
 
 function refuseNote(s: Session, call: ToolCall): string {
   if (s.mode === "read") return "Read-only mode: actions are disabled.";
   const targetDomain = call.name === "navigate" ? domainOf(String(call.args.url ?? "")) : s.domain;
   if (getSiteMode(targetDomain) === "blocked") return `Blocked: ${targetDomain} is on the never-act list.`;
+  if (s.frameDomain && getSiteMode(s.frameDomain) === "blocked") return `Blocked: the current frame (${s.frameDomain}) is on the never-act list.`;
   const sens = detectSensitiveInput(String(call.args.text ?? call.args.value ?? ""));
   if (sens.flagged) return `Refused: will not type a ${sens.kind}.`;
   const banned = classifyProhibited({ label: labelFor(s, call), text: String(call.args.text ?? ""), url: String(call.args.url ?? "") });
@@ -404,7 +414,7 @@ async function refreshDomain(s: Session) {
 
 /** Fetch the current interactive elements and refresh the selector→label cache. */
 async function fetchInteractive(s: Session): Promise<any[]> {
-  const { response } = await executeCommand(s.browserId, { type: "page.listInteractive", target: { tabId: s.tabId } });
+  const { response } = await executeCommand(s.browserId, { type: "page.listInteractive", target: { tabId: s.tabId, frameId: s.frameId } });
   const elements = ((response.result as any)?.elements ?? []) as any[];
   for (const el of elements) if (el?.selector) s.elementLabels.set(String(el.selector), String(el.text ?? el.ariaLabel ?? ""));
   return elements;
@@ -433,6 +443,7 @@ async function runTool(s: Session, call: ToolCall): Promise<{ ok: boolean; str: 
   // Trust boundary: TAB_NOT_ENABLED is enforced in the extension (commandHandlers.ts), which
   // every executeCommand goes through. Do not reach the extension by any other path here.
   if (call.name === "switch_tab") return switchTab(s, call);
+  if (call.name === "switch_frame") return switchFrame(s, call);
 
   if (call.name === "find") {
     const query = String(call.args.query ?? "");
@@ -455,7 +466,7 @@ async function runTool(s: Session, call: ToolCall): Promise<{ ok: boolean; str: 
     s.networkEnabled = true;
   }
   const payload = map.payload ? map.payload(call.args) : undefined;
-  const { response } = await executeCommand(s.browserId, { type: map.type as any, target: { tabId: s.tabId }, payload });
+  const { response } = await executeCommand(s.browserId, { type: map.type as any, target: { tabId: s.tabId, frameId: s.frameId }, payload });
   if (!response.ok) {
     const code = response.error?.code, msg = response.error?.message ?? "failed";
     // Give the model a recovery hint instead of a bare error so it doesn't get stuck retrying.
@@ -466,7 +477,7 @@ async function runTool(s: Session, call: ToolCall): Promise<{ ok: boolean; str: 
   }
 
   // Keep the current domain in sync after navigation.
-  if (call.name === "navigate") { s.domain = domainOf(String(call.args.url ?? "")) || s.domain; s.injectionFlagged = undefined; }
+  if (call.name === "navigate") { s.domain = domainOf(String(call.args.url ?? "")) || s.domain; s.injectionFlagged = undefined; s.frameId = s.frameDomain = undefined; }
 
   if (call.name === "screenshot") {
     const r = response.result as { dataUrl?: string; url?: string; title?: string; imageWidth?: number; imageHeight?: number };
@@ -491,7 +502,7 @@ async function runTool(s: Session, call: ToolCall): Promise<{ ok: boolean; str: 
   const raw = JSON.stringify(resultObj);
   const clipped = raw.length > limit ? raw.slice(0, limit) + '…","_truncated":true}' : raw;
   // Fence page-derived content so the model treats it as data (prompt-injection defense).
-  const untrusted = ["list_interactive", "extract_text", "get_selected_element", "get_console", "get_network"].includes(call.name) || resultObj.page !== undefined;
+  const untrusted = ["list_interactive", "extract_text", "get_selected_element", "get_console", "get_network", "list_frames"].includes(call.name) || resultObj.page !== undefined;
   const str = untrusted ? wrapUntrusted(call.name, clipped) : clipped;
   // wrapUntrusted warns the model; this makes the same signal actionable in decideAction.
   if (untrusted) {
@@ -518,8 +529,23 @@ async function switchTab(s: Session, call: ToolCall): Promise<{ ok: boolean; str
   if (!tab) return { ok: false, str: JSON.stringify({ error: "no such tab" }), summary: "switch_tab: not found" };
   s.tabId = tabId;
   s.domain = domainOf(tab.url);
+  s.frameId = s.frameDomain = undefined;
   s.elementLabels.clear();
   return { ok: true, str: JSON.stringify({ switched: tabId, url: tab.url, title: tab.title }), summary: `switched to tab ${tabId}` };
+}
+
+async function switchFrame(s: Session, call: ToolCall): Promise<{ ok: boolean; str: string; summary: string }> {
+  const frameId = Number(call.args.frameId);
+  if (!Number.isInteger(frameId) || frameId < 0) return { ok: false, str: JSON.stringify({ error: "frameId required" }), summary: "switch_frame: bad frameId" };
+  if (frameId === 0) { s.frameId = s.frameDomain = undefined; s.elementLabels.clear(); return { ok: true, str: JSON.stringify({ switched: 0 }), summary: "switched to top frame" }; }
+  const { response } = await executeCommand(s.browserId, { type: "page.listFrames", target: { tabId: s.tabId } });
+  if (!response.ok) return { ok: false, str: JSON.stringify(response.error ?? { error: "list_frames failed" }), summary: `switch_frame: ${response.error?.code}` };
+  const frame = ((response.result as any)?.frames ?? []).find((f: any) => f.frameId === frameId);
+  if (!frame) return { ok: false, str: JSON.stringify({ error: "no such frame", hint: "call list_frames — frameIds change when an iframe navigates" }), summary: "switch_frame: not found" };
+  s.frameId = frameId;
+  s.frameDomain = domainOf(frame.url) || undefined;
+  s.elementLabels.clear();
+  return { ok: true, str: JSON.stringify({ switched: frameId, url: frame.url }), summary: `switched to frame ${frameId}` };
 }
 
 // ---------- provider adapters (unchanged wire format) ----------
@@ -677,6 +703,7 @@ function stripImages(msgs: any[]) {
 }
 function sweep() {
   const cutoff = Date.now() - 15 * 60_000;
-  for (const [k, v] of sessions) if (v.createdAt < cutoff && v.status !== "running") sessions.delete(k);
+  // Idle time, not age: a long run that pauses for approval at minute 16 must still be approvable.
+  for (const [k, v] of sessions) if ((v.touchedAt ?? v.createdAt) < cutoff && v.status !== "running") sessions.delete(k);
   if (sessions.size > 200) log.warn(`agent sessions high: ${sessions.size}`);
 }

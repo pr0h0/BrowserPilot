@@ -319,6 +319,70 @@ check("trusted type actually landed in the field", tout.ok && tout.result.text.i
   await cmd(BID, "tabs.close", {}, CTAB);
 }
 
+// ---------- 12b2. iframes: list the frame tree, target any depth by frameId ----------
+{
+  const fr = await cmd(BID, "tabs.open", { url: "http://127.0.0.1:8899/frames.html", active: true });
+  const FTAB = fr.result.id as number;
+  await popup.eval(`chrome.runtime.sendMessage({ kind: "setTabEnabled", tabId: ${FTAB}, enabled: true })`);
+  await Bun.sleep(1500);
+  const fcmd = (type: string, payload: unknown, frameId?: number) =>
+    api(`/api/browsers/${BID}/commands`, { method: "POST", body: JSON.stringify({ type, target: { tabId: FTAB, frameId }, payload }) });
+
+  const lf = await fcmd("page.listFrames", {});
+  const frames = (lf.result?.frames ?? []) as any[];
+  const byDepth = (d: number) => frames.find((f) => f.url.includes(`d=${d}`));
+  const f1 = byDepth(1), f2 = byDepth(2), f3 = byDepth(3);
+  check("listFrames returns the full nested tree (top + 3 iframes, parent links intact)",
+    lf.ok && frames.length === 4 && f1?.parentFrameId === 0 && f2?.parentFrameId === f1?.frameId && f3?.parentFrameId === f2?.frameId,
+    JSON.stringify(frames.map((f) => [f.frameId, f.parentFrameId, f.url.slice(-12)])));
+
+  // Deepest frame (cross-site from its parent): first command injects the content script there.
+  await fcmd("page.type", { selector: "#q", text: "deep" }, f3?.frameId);
+  const ck3 = await fcmd("page.click", { selector: "#b" }, f3?.frameId);
+  const t3 = await fcmd("page.extractText", {}, f3?.frameId);
+  check("type+click inside a 3-deep cross-origin iframe", ck3.ok && t3.ok && t3.result.text.includes("clicked:3:deep"), t3.result?.text ?? JSON.stringify(ck3.error));
+  const t0 = await fcmd("page.extractText", {});
+  check("omitting frameId still targets the top document only", t0.ok && t0.result.text.includes("level 0") && !t0.result.text.includes("clicked:"), t0.result?.text?.slice(0, 60));
+  const t1 = await fcmd("page.extractText", {}, f1?.frameId);
+  check("a middle frame is untouched by the deep frame's action", t1.ok && t1.result.text.includes("level 1") && !t1.result.text.includes("clicked:"), t1.result?.text?.slice(0, 60));
+  const bad = await fcmd("page.extractText", {}, 99999);
+  check("unknown frameId fails cleanly", !bad.ok, bad.error?.code);
+  const drag = await fcmd("page.drag", { from: "#q", to: "#b" }, f1?.frameId);
+  check("top-frame-only commands refuse a subframe", !drag.ok && drag.error?.code === "INVALID_COMMAND", drag.error?.code);
+
+  const ag = await runAgent("SCENARIO:frames", "auto", FTAB);
+  check("agent: list_frames → switch_frame → act inside the nested iframe", ag.status === "done" && ag.answer === "FRAMES DONE",
+    JSON.stringify(ag.transcript.map((t: any) => `${t.tool}:${t.ok}`)));
+  const ta = await fcmd("page.extractText", {}, f3?.frameId);
+  check("agent's click landed in the deep frame", ta.ok && ta.result.text.includes("clicked:3:agent"), ta.result?.text?.slice(0, 60));
+  // The real side panel on this tab: Tools shows a frame picker, and extract runs in the chosen frame.
+  await popup.eval(`chrome.sidePanel.open({ windowId: ${fr.result.windowId} })`, true).catch(() => {});
+  let spt: any;
+  for (let i = 0; i < 20 && !spt; i++) { await Bun.sleep(250); spt = (await list()).find((t) => t.url.includes("/src/sidepanel/index.html")); }
+  check("side panel opens on the iframes page", Boolean(spt));
+  if (spt) {
+    const sp = await Cdp.connect(spt.webSocketDebuggerUrl);
+    for (let i = 0; i < 20; i++) { await Bun.sleep(250); if (await sp.eval(`!!document.querySelector('button[title="Tools"]')`)) break; }
+    await sp.eval(`document.querySelector('button[title="Tools"]').click()`);
+    let opts = "";
+    for (let i = 0; i < 20 && !opts.includes("d=3"); i++) {
+      await Bun.sleep(250);
+      opts = await sp.eval(`[...document.querySelectorAll("select option")].map(o => o.value + "=" + o.textContent).join("|")`);
+    }
+    check("Tools lists the frame tree, nested deeper per level", opts.startsWith("0=Top document|") && /\u00a0{6}↳ [^|]*d=3/.test(opts), opts);
+    await sp.eval(`(() => { const s = document.querySelector("select");
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(s, "${f3?.frameId}");
+      s.dispatchEvent(new Event("change", { bubbles: true })); return true; })()`);
+    await sp.eval(`[...document.querySelectorAll("button")].find(b => b.textContent === "Extract text").click()`);
+    let pre = "";
+    for (let i = 0; i < 20 && !pre; i++) { await Bun.sleep(250); pre = await sp.eval(`document.querySelector("pre")?.textContent ?? ""`); }
+    check("Extract text runs inside the frame picked in Tools", pre.includes("level 3") && !pre.includes("level 0"), pre.slice(0, 80));
+    await sp.eval(`window.close()`).catch(() => {});
+    sp.close();
+  }
+  await cmd(BID, "tabs.close", {}, FTAB);
+}
+
 // ---------- 12c. workflow recording: demonstrate → save → replay ----------
 {
   await cmd(BID, "tabs.navigate", { url: "http://127.0.0.1:8899/form.html" }, TAB);
@@ -403,6 +467,64 @@ check("schedule appears in list", schedules.some((s: any) => s.id === sched.sche
 await api(`/api/schedules/${sched.schedule.id}`, { method: "DELETE" });
 const activity = await api(`/api/activity?browserId=${BID}`);
 check("activity feed records agent runs", (activity.items ?? []).some((it: any) => it.action === "agent:run"));
+
+// ---------- 15b. the side panel's chat UI: approval survives a panel reopen, and stays resolved ----------
+{
+  await popup.eval(`chrome.storage.local.set({ "browserpilot:agentMode": "approve" })`);
+  await sw.eval(`chrome.tabs.create({ url: "chrome-extension://${EXT_ID}/src/sidepanel/index.html", active: true }).then(t => t.id)`);
+  let pt: any;
+  for (let i = 0; i < 20 && !pt; i++) { await Bun.sleep(250); pt = (await list()).find((t) => t.url.includes("/src/sidepanel/index.html")); }
+  const panel = await Cdp.connect(pt.webSocketDebuggerUrl);
+  const text = () => panel.eval(`document.body.innerText`) as Promise<string>;
+  const waitText = async (needle: string, ms = 8000) => {
+    for (let t = 0; t < ms; t += 250) { if ((await text()).includes(needle)) return true; await Bun.sleep(250); }
+    return false;
+  };
+  await waitText("Ask");
+  await panel.eval(`(() => { const ta = document.querySelector("textarea");
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(ta, "SCENARIO:uiapprove");
+    ta.dispatchEvent(new Event("input", { bubbles: true })); return true; })()`);
+  await Bun.sleep(200);
+  await panel.eval(`[...document.querySelectorAll("button")].find(b => b.textContent === "Ask").click()`);
+  const asked = await waitText("approval needed");
+  check("chat UI shows the approval card with a readable action", asked && (await text()).includes('⌨ type "ui approved"'), (await text()).slice(-200));
+
+  // Close + reopen the panel (a reload is the same thing to the page): the card must come back.
+  await panel.eval(`setTimeout(() => location.reload(), 0)`);
+  await Bun.sleep(1500);
+  check("reopened panel resumes the run and its pending approval", await waitText("approval needed"), (await text()).slice(-200));
+
+  await panel.eval(`[...document.querySelectorAll("button")].find(b => b.textContent === "Approve").click()`);
+  await Bun.sleep(1200); // run is now inside the ~3s wait_for, after the approval
+  const mid = await text();
+  check("approved card does not reappear while the run continues", mid.includes("working") && !mid.includes("approval needed"), mid.slice(-200));
+  const done = await waitText("UI APPROVE DONE", 10000);
+  const final = await text();
+  check("run's answer lands in the chat exactly once", done && final.split("UI APPROVE DONE").length === 2, final.slice(-200));
+  panel.close();
+}
+
+// ---------- 16. connection profiles: save several servers, switch with the popup's picker ----------
+{
+  const online = async () => (await api("/api/browsers")).find((b: any) => b.id === BID)?.online === true;
+  await popup.eval(`chrome.runtime.sendMessage({ kind: "saveSettings", settings: { profiles: [
+    { name: "nowhere", backendUrl: "ws://127.0.0.1:9/ws", pairingToken: "x" },
+    { name: "e2e", backendUrl: "${WS}", pairingToken: "${TOKEN}" } ] } })`);
+  await popup.eval(`setTimeout(() => location.reload(), 0)`); await Bun.sleep(1500);
+  const shown = await popup.eval(`[...document.querySelectorAll("select option")].map(o => o.value).join(",") + "|" + document.querySelector("select").value`);
+  check("popup lists saved profiles and marks the active one", shown === ",nowhere,e2e|e2e", shown);
+  // Drive the real <select> the way a user does (React listens for a bubbling change event).
+  const pick = (name: string) => popup.eval(`(() => { const s = document.querySelector("select");
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(s, "${name}");
+    s.dispatchEvent(new Event("change", { bubbles: true })); return true; })()`);
+  await pick("nowhere");
+  let off = false; for (let i = 0; i < 10 && !off; i++) { await Bun.sleep(500); off = !(await online()); }
+  const active = await popup.eval(`chrome.storage.local.get("browserpilot:settings").then(r => r["browserpilot:settings"].backendUrl)`);
+  check("switching profile moves the connection to that server", off && active === "ws://127.0.0.1:9/ws", active);
+  await pick("e2e");
+  let on = false; for (let i = 0; i < 15 && !on; i++) { await Bun.sleep(500); on = await online(); }
+  check("switching back reconnects with that profile's token", on);
+}
 
 sw.close(); popup.close();
 console.log(failures === 0 ? "\nALL E2E CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);

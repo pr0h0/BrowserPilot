@@ -25,9 +25,11 @@ const TRUSTED_ACTIONS = new Set(["page.click", "page.type"]);
  *  success, or null to signal "fall back to synthetic content-script events".
  *  Static import: a dynamic import() pulls in Vite's preload helper which references
  *  window/document and throws in the service worker. */
-async function tryTrustedInput(tabId: number, type: string, payload: any, timeoutMs: number): Promise<any | null> {
+async function tryTrustedInput(tabId: number, type: string, payload: any, timeoutMs: number, frameId: number): Promise<any | null> {
   const selector: string | undefined = payload?.selector;
-  if (!selector) return null;
+  // ponytail: page.locate returns coords relative to the frame's own viewport, and CDP wants
+  // top-level ones — so frames use synthetic input. Summing iframe offsets up the chain would lift this.
+  if (!selector || frameId !== 0) return null;
   const loc = await sendToContent(tabId, "page.locate", { selector }, timeoutMs);
   if (!loc?.ok || !loc.result?.found) return null;                 // can't locate → fall back
   if (loc.result.isPassword) return null;                          // let content refuse password fields
@@ -46,17 +48,25 @@ async function tryTrustedInput(tabId: number, type: string, payload: any, timeou
 const ok = (id: string, result: unknown): CommandResponse => ({ id, ok: true, result });
 const fail = (id: string, code: string, message: string): CommandResponse => ({ id, ok: false, error: { code, message } });
 
-/** Send a structured action to the content script of a tab. */
-function sendToContent(tabId: number, action: string, payload: unknown, timeoutMs: number): Promise<any> {
+/** Send a structured action to the content script of one frame of a tab (0 = top document).
+ *  Always pass a frameId: without one, chrome broadcasts to every frame and the first reply wins. */
+function sendToContent(tabId: number, action: string, payload: unknown, timeoutMs: number, frameId = 0): Promise<any> {
   return new Promise((resolve) => {
     const timer = setTimeout(() => resolve({ ok: false, error: { code: "COMMAND_TIMEOUT", message: "content script timed out" } }), timeoutMs);
-    chrome.tabs.sendMessage(tabId, { __bp: true, action, payload }, (res) => {
+    chrome.tabs.sendMessage(tabId, { __bp: true, action, payload }, { frameId }, (res) => {
       clearTimeout(timer);
       if (chrome.runtime.lastError) {
         resolve({ ok: false, error: { code: "CONTENT_SCRIPT_FAILED", message: `${chrome.runtime.lastError.message}. Try reloading the page so the content script loads.` } });
       } else resolve(res);
     });
   });
+}
+
+/** Every frame in the tab, at any nesting depth. parentFrameId -1 = the top document; build the
+ *  tree by following parentFrameId. frameIds stay valid until that frame navigates or is removed. */
+async function listFrames(tabId: number) {
+  const frames = (await chrome.webNavigation.getAllFrames({ tabId })) ?? [];
+  return { frames: frames.map((f) => ({ frameId: f.frameId, parentFrameId: f.parentFrameId, url: f.url, errorOccurred: f.errorOccurred })) };
 }
 
 /** Recorded workflow steps per tab, keyed by tabId. Presence in the map == "recording".
@@ -81,6 +91,7 @@ async function notify(payload: any): Promise<unknown> {
 export async function dispatchCommand(command: Command): Promise<CommandResponse> {
   const { id, type, payload, timeoutMs = 30_000 } = command;
   const tabId = command.target?.tabId;
+  const frameId = command.target?.frameId ?? 0;
 
   try {
     // 1. Tab management — always allowed.
@@ -99,6 +110,13 @@ export async function dispatchCommand(command: Command): Promise<CommandResponse
     const resolvedTab = await resolveTabId(tabId);
     if (!ALWAYS_ALLOWED.includes(type as any) && !isTabEnabled(resolvedTab)) {
       return fail(id, "TAB_NOT_ENABLED", `Control is not enabled for tab ${resolvedTab}. Enable it from the popup or side panel.`);
+    }
+
+    if (type === "page.listFrames") return ok(id, await listFrames(resolvedTab));
+    // These drive CDP against the top document (frame-relative coords / a top-level querySelector),
+    // so pointing them at a subframe would act on the wrong element. Refuse rather than misfire.
+    if (frameId !== 0 && (type === "page.drag" || type === "page.upload" || type === "page.startRecorder" || type === "page.stopRecorder")) {
+      return fail(id, "INVALID_COMMAND", `${type} only works on the top frame (frameId 0).`);
     }
 
     // Coordinate input (canvas, <video>, maps — targets with no DOM node to select). Coords are
@@ -155,19 +173,27 @@ export async function dispatchCommand(command: Command): Promise<CommandResponse
     if (TRUSTED_ACTIONS.has(type)) {
       const settings = await getSettings();
       if (settings.trustedInput) {
-        const trusted = await tryTrustedInput(resolvedTab, type, payload ?? {}, timeoutMs - 500);
+        const trusted = await tryTrustedInput(resolvedTab, type, payload ?? {}, timeoutMs - 500, frameId);
         if (trusted) return ok(id, trusted);
       }
     }
 
-    let res = await sendToContent(resolvedTab, type, payload ?? {}, timeoutMs - 500);
-    // Self-heal: tabs opened before the extension loaded have no content script — inject and retry
-    // once instead of telling the user to reload. (Fails on chrome:// pages; original error stands.)
+    let res = await sendToContent(resolvedTab, type, payload ?? {}, timeoutMs - 500, frameId);
+    // Self-heal / frame injection: the manifest only loads the content script in the top frame, so
+    // the first command aimed at an iframe (any depth) — or at a tab opened before the extension
+    // loaded — finds nobody listening. Inject into exactly that frame and retry once.
+    // (Fails on chrome:// pages or a frameId that no longer exists; original error stands.)
     if (!res?.ok && res?.error?.code === "CONTENT_SCRIPT_FAILED") {
       try {
         const files = chrome.runtime.getManifest().content_scripts?.[0]?.js ?? [];
-        await chrome.scripting.executeScript({ target: { tabId: resolvedTab }, files });
-        res = await sendToContent(resolvedTab, type, payload ?? {}, timeoutMs - 500);
+        await chrome.scripting.executeScript({ target: { tabId: resolvedTab, frameIds: [frameId] }, files });
+        // The injected file is a loader that import()s the real script, so its listener shows up a
+        // beat after executeScript resolves. Retry briefly instead of failing the first command.
+        for (let i = 0; i < 20; i++) {
+          res = await sendToContent(resolvedTab, type, payload ?? {}, timeoutMs - 500, frameId);
+          if (res?.error?.code !== "CONTENT_SCRIPT_FAILED") break;
+          await new Promise((r) => setTimeout(r, 100));
+        }
       } catch { /* keep the original error */ }
     }
     if (res?.ok) return ok(id, res.result);
