@@ -1,0 +1,11 @@
+services:
+  backend:
+    build: .
+    image: browserpilot-backend:local
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+    # Loopback only: the cloudflared tunnel is the sole public way in.
+    ports: ["127.0.0.1:9876:9876"]
+    volumes: ["./apps/backend/data:/app/apps/backend/data"]
+    restart: unless-stopped

@@ -109,6 +109,19 @@ curl localhost:9876/health
 SQLite tables are created automatically on boot. Screenshots are written to
 `apps/backend/data/screenshots/`.
 
+### Docker (long-running instances)
+
+```bash
+docker compose -p browserpilot up -d --build   # build + start; rerun to redeploy
+docker compose -p browserpilot logs -f         # logs
+docker compose -p browserpilot down            # stop
+```
+
+The container reads the root `.env`, keeps the SQLite DB and screenshots in
+`apps/backend/data/` (bind mount, so local and Docker runs share data), publishes only
+`127.0.0.1:9876`, and restarts unless stopped. Stop any `bun run dev:backend` first, as both
+use port 9876.
+
 ## 6. Load the Chrome extension (unpacked)
 
 ```bash
@@ -405,7 +418,7 @@ ingress:
 > `~/.cloudflared/config.yml` and attaches your hostname to whatever tunnel *that* file
 > names, silently. Add `--overwrite-dns` to fix a record that went to the wrong tunnel.
 
-Run it under systemd (`Restart=always`), then point the extension at
+Run the backend in Docker (§5) and the tunnel under systemd (`Restart=always`), then point the extension at
 `wss://pilot.example.com/ws` with the token. Verify before trusting it:
 
 ```bash
